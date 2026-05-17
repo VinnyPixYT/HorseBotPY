@@ -835,7 +835,7 @@ async def activity_levels(interaction: discord.Interaction, action: str, level: 
         if action == "reset-levels":
             confirm_embed = discord.Embed(
                 title="⚠️ Confirm Reset Levels",
-                description="Are you sure you want to delete EVERYONE'S levels and XP in this server?\n\nReact with ✅ or ❌.\n\n✅ = Deleted.\n❌ = Cancelled.",
+                description="Are you sure you want to delete EVERYONE'S levels and XP in this server?\n\nReact with CHECKMARK or X.\n\nCHECKMARK = Deleted.\nX = Cancelled.",
                 color=discord.Color.orange()
             )
             await interaction.response.send_message(embed=confirm_embed)
@@ -863,14 +863,14 @@ async def activity_levels(interaction: discord.Interaction, action: str, level: 
                     save_levels_data()
                     
                     reset_embed = discord.Embed(
-                        title="✅ Levels Reset",
+                        title="SUCCESS: Levels Reset",
                         description="All levels and XP have been deleted for this server.",
                         color=discord.Color.green()
                     )
                     await interaction.followup.send(embed=reset_embed)
                 else:
                     cancel_embed = discord.Embed(
-                        title="❌ Cancelled",
+title="CANCELLED",
                         description="Level reset has been cancelled.",
                         color=discord.Color.red()
                     )
@@ -1200,7 +1200,7 @@ class PlantConfirmationView(ui.View):
         super().__init__(timeout=60)
         self.name = name
     
-    @ui.button(label="Confirm", style=discord.ButtonStyle.green, emoji="✅")
+    @ui.button(label="Confirm", style=discord.ButtonStyle.green)
     async def confirm(self, interaction: discord.Interaction, button: ui.Button):
         guild_id = str(interaction.guild.id)
         
@@ -1220,10 +1220,10 @@ class PlantConfirmationView(ui.View):
         )
         await interaction.response.edit_message(embed=embed, view=None)
     
-    @ui.button(label="Cancel", style=discord.ButtonStyle.red, emoji="❌")
+    @ui.button(label="Cancel", style=discord.ButtonStyle.red)
     async def cancel(self, interaction: discord.Interaction, button: ui.Button):
         embed = discord.Embed(
-            title="❌ Cancelled",
+title="❌ Cancelled",
             description="Tree planting has been cancelled.",
             color=discord.Color.red()
         )
@@ -2252,7 +2252,7 @@ async def activity_economy(interaction: discord.Interaction, action: str, symbol
     elif action == "reset-economy":
         confirm_embed = discord.Embed(
             title="Confirm Economy Reset",
-            description="Are you sure you want to reset EVERYONE'S money in this server?\n\nReact with ✅ or ❌.\n\n✅ = Reset\n❌ = Cancel",
+            description="Are you sure you want to reset EVERYONE'S money in this server?\n\nReact with CHECKMARK or X.\n\nCHECKMARK = Reset\nX = Cancel",
             color=discord.Color.orange()
         )
         await interaction.response.send_message(embed=confirm_embed)
