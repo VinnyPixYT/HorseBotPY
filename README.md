@@ -1,4 +1,4 @@
-# shorthorse bot
+# horse bot
 
 A Discord bot for "horse's stables" server with economy, counting games, levels, and tree planting features.
 
