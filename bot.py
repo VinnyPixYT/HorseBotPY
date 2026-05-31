@@ -1819,7 +1819,7 @@ async def _handle_economy_action(interaction, guild_id, user_id, settings, actio
         await interaction.response.send_message(embed=embed)
     
     elif action == "set-start-balance":
-        if amount is None or amount_int is None:
+        if amount_int is None:
             await interaction.response.send_message("Please provide a valid amount!", ephemeral=True)
             return
         
@@ -1832,7 +1832,60 @@ async def _handle_economy_action(interaction, guild_id, user_id, settings, actio
         
         embed = discord.Embed(
             title="Starting Balance Set",
-            description="New members will start with {}".format(format_money(guild_id, amount)),
+            description="New members will start with {}".format(format_money(guild_id, amount_int)),
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed)
+    
+    elif action == "money-audit-log":
+        if channel_id and channel_id.lower() == "disable":
+            settings["audit_channel"] = None
+            save_economy_data()
+            
+            embed = discord.Embed(
+                title="Audit Log Disabled",
+                description="Money transaction logging has been disabled",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed)
+        elif channel_id:
+            try:
+                channel = await interaction.guild.fetch_channel(int(channel_id))
+                settings["audit_channel"] = channel_id
+                save_economy_data()
+                
+                embed = discord.Embed(
+                    title="Audit Log Set",
+                    description="Money transactions will be logged to <#{}>".format(channel_id),
+                    color=discord.Color.green()
+                )
+                await interaction.response.send_message(embed=embed)
+            except:
+                await interaction.response.send_message("Invalid channel ID!", ephemeral=True)
+    
+    elif action == "maximum-balance":
+        if amount_int is None:
+            await interaction.response.send_message("Please provide a valid amount!", ephemeral=True)
+            return
+        
+        if amount_int < 0:
+            await interaction.response.send_message("Amount cannot be negative!", ephemeral=True)
+            return
+        
+        if not balance_type:
+            await interaction.response.send_message("Please specify cash or bank!", ephemeral=True)
+            return
+        
+        if balance_type == "cash":
+            settings["max_cash"] = amount_int
+        else:
+            settings["max_bank"] = amount_int
+        
+        save_economy_data()
+        
+        embed = discord.Embed(
+            title="Maximum Balance Set",
+            description="Maximum {} balance set to {}".format(balance_type, format_money(guild_id, amount_int)),
             color=discord.Color.green()
         )
         await interaction.response.send_message(embed=embed)
@@ -1870,39 +1923,12 @@ async def _handle_economy_action(interaction, guild_id, user_id, settings, actio
         )
         await interaction.response.send_message(embed=embed)
     
-    elif action == "maximum-balance":
-        if amount is None or amount_int is None:
-            await interaction.response.send_message("Please provide a valid amount!", ephemeral=True)
-            return
-        
-        if amount_int < 0:
-            await interaction.response.send_message("Amount cannot be negative!", ephemeral=True)
-            return
-        
-        if not balance_type:
-            await interaction.response.send_message("Please specify cash or bank!", ephemeral=True)
-            return
-        
-        if balance_type == "cash":
-            settings["max_cash"] = amount_int
-        else:
-            settings["max_bank"] = amount_int
-        
-        save_economy_data()
-        
-        embed = discord.Embed(
-            title="Maximum Balance Set",
-            description="Maximum {} balance set to {}".format(balance_type, format_money(guild_id, amount)),
-            color=discord.Color.green()
-        )
-        await interaction.response.send_message(embed=embed)
-    
     elif action == "add-money":
         if not target:
             await interaction.response.send_message("Please mention a user!", ephemeral=True)
             return
         
-        if amount is None or amount_int is None:
+        if amount_int is None:
             await interaction.response.send_message("Please provide a valid amount!", ephemeral=True)
             return
         
@@ -1928,7 +1954,7 @@ async def _handle_economy_action(interaction, guild_id, user_id, settings, actio
         
         embed = discord.Embed(
             title="Money Added",
-            description="Added {} to {}".format(format_money(guild_id, amount), target.mention),
+            description="Added {} to {}".format(format_money(guild_id, amount_int), target.mention),
             color=discord.Color.green()
         )
         await interaction.response.send_message(embed=embed)
@@ -1938,7 +1964,7 @@ async def _handle_economy_action(interaction, guild_id, user_id, settings, actio
             await interaction.response.send_message("Please provide a role ID!", ephemeral=True)
             return
         
-        if amount is None or amount_int is None:
+        if amount_int is None:
             await interaction.response.send_message("Please provide a valid amount!", ephemeral=True)
             return
         
@@ -1967,18 +1993,18 @@ async def _handle_economy_action(interaction, guild_id, user_id, settings, actio
                         new_cash = settings["max_cash"]
                     balance["cash"] = new_cash
                 else:
-                    new_bank = balance["bank"] + amount
+                    new_bank = balance["bank"] + amount_int
                     if settings["max_bank"] > 0 and new_bank > settings["max_bank"]:
                         new_bank = settings["max_bank"]
                     balance["bank"] = new_bank
                 save_user_balance(guild_id, member.id)
                 count += 1
         
-        await log_economy_transaction(guild_id, "ADD MONEY ROLE", user_id, amount, "Added to {} members with role {}".format(count, role.name))
+        await log_economy_transaction(guild_id, "ADD MONEY ROLE", user_id, amount_int, "Added to {} members with role {}".format(count, role.name))
         
         embed = discord.Embed(
             title="Money Added to Role",
-            description="Added {} to {} members with role {}".format(format_money(guild_id, amount), count, role.name),
+            description="Added {} to {} members with role {}".format(format_money(guild_id, amount_int), count, role.name),
             color=discord.Color.green()
         )
         await interaction.response.send_message(embed=embed)
@@ -1988,7 +2014,7 @@ async def _handle_economy_action(interaction, guild_id, user_id, settings, actio
             await interaction.response.send_message("Please mention a user!", ephemeral=True)
             return
         
-        if amount is None or amount_int is None:
+        if amount_int is None:
             await interaction.response.send_message("Please provide a valid amount!", ephemeral=True)
             return
         
@@ -2018,7 +2044,7 @@ async def _handle_economy_action(interaction, guild_id, user_id, settings, actio
             await interaction.response.send_message("Please provide a role ID!", ephemeral=True)
             return
         
-        if amount is None or amount_int is None:
+        if amount_int is None:
             await interaction.response.send_message("Please provide a valid amount!", ephemeral=True)
             return
         
@@ -2052,7 +2078,7 @@ async def _handle_economy_action(interaction, guild_id, user_id, settings, actio
         
         embed = discord.Embed(
             title="Money Removed from Role",
-            description="Removed {} from {} members with role {}".format(format_money(guild_id, amount), count, role.name),
+            description="Removed {} from {} members with role {}".format(format_money(guild_id, amount_int), count, role.name),
             color=discord.Color.green()
         )
         await interaction.response.send_message(embed=embed)
@@ -2084,12 +2110,8 @@ async def _handle_economy_action(interaction, guild_id, user_id, settings, actio
         await interaction.response.send_message(embed=embed)
     
     elif action == "deposit":
-        if amount is None:
-            await interaction.response.send_message("Please provide an amount to deposit!", ephemeral=True)
-            return
-        
         if amount_int is None:
-            await interaction.response.send_message("Invalid amount! Use a number or 'all'.", ephemeral=True)
+            await interaction.response.send_message("Please provide an amount to deposit!", ephemeral=True)
             return
         
         balance = get_user_balance(guild_id, user_id)
@@ -2120,12 +2142,8 @@ async def _handle_economy_action(interaction, guild_id, user_id, settings, actio
         await interaction.response.send_message(embed=embed)
     
     elif action == "withdraw":
-        if amount is None:
-            await interaction.response.send_message("Please provide an amount to withdraw!", ephemeral=True)
-            return
-        
         if amount_int is None:
-            await interaction.response.send_message("Invalid amount! Use a number or 'all'.", ephemeral=True)
+            await interaction.response.send_message("Please provide an amount to withdraw!", ephemeral=True)
             return
         
         balance = get_user_balance(guild_id, user_id)
@@ -2160,12 +2178,8 @@ async def _handle_economy_action(interaction, guild_id, user_id, settings, actio
             await interaction.response.send_message("Please mention a user!", ephemeral=True)
             return
         
-        if amount is None:
-            await interaction.response.send_message("Please provide an amount!", ephemeral=True)
-            return
-        
         if amount_int is None:
-            await interaction.response.send_message("Invalid amount! Use a number or 'all'.", ephemeral=True)
+            await interaction.response.send_message("Please provide an amount!", ephemeral=True)
             return
         
         if target.id == user_id:
