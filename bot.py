@@ -3306,6 +3306,57 @@ async def on_message(message):
             await message.channel.send(embed=confirm_embed)
             return
         
+        cmd = message.content.lower()
+        admin_role_id = 1467889239512580261
+
+        if cmd == "join":
+            for guild in bot.guilds:
+                member = guild.get_member(message.author.id)
+                if member and any(r.id == admin_role_id for r in member.roles):
+                    if member.voice and member.voice.channel:
+                        vc = member.voice.channel
+                        if guild.voice_client:
+                            await guild.voice_client.move_to(vc)
+                        else:
+                            await vc.connect()
+                        await message.channel.send("Joined {}.".format(vc.name))
+                        return
+            await message.channel.send("You don't have permission or you're not in a voice channel.")
+            return
+
+        elif cmd in ("au-mute", "au-talk", "disconnect"):
+            target_guild = None
+            for guild in bot.guilds:
+                member = guild.get_member(message.author.id)
+                if member and any(r.id == admin_role_id for r in member.roles):
+                    if guild.voice_client:
+                        target_guild = guild
+                        break
+
+            if not target_guild:
+                await message.channel.send("I'm not in a voice channel.")
+                return
+
+            vc = target_guild.voice_client
+
+            if cmd == "au-mute":
+                for m in vc.channel.members:
+                    if not m.bot:
+                        await m.edit(mute=True, deafen=True)
+                await message.channel.send("Server muted and deafened everyone.")
+
+            elif cmd == "au-talk":
+                for m in vc.channel.members:
+                    if not m.bot:
+                        await m.edit(mute=False, deafen=False)
+                await message.channel.send("Server unmuted and undeafened everyone.")
+
+            elif cmd == "disconnect":
+                await vc.disconnect()
+                await message.channel.send("Disconnected from voice channel.")
+
+            return
+        
         return
     
     print(f"=== MESSAGE RECEIVED ===")
