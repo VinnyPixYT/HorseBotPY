@@ -19,11 +19,13 @@ load_dotenv()
 intents = discord.Intents.default()
 intents.guilds = True
 intents.message_content = True
+intents.members = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 counting_channels = {}
 counting_games = {}
+counting_caught_up = {}
 user_levels = {}
 tree_channels = {}
 tree_data = {}
@@ -41,10 +43,13 @@ DATA_FILE_TREE_CHANNELS = "tree_channels.json"
 DATA_FILE_TREE_DATA = "tree_data.json"
 DATA_FILE_ECONOMY_SETTINGS = "economy_settings.json"
 DATA_FILE_ECONOMY_BALANCES = "economy_balances.json"
+DATA_FILE_REPORTS = "reports.json"
 DB_FILE = 'db/mainDB.sqlite'
 
 talked_recently = set()
 levels_paused = False
+cases = {}
+message_case_map = {}
 
 def validate_tree_name(name):
     
@@ -63,6 +68,7 @@ def save_data():
             json.dump(counting_games, f, indent=2)
         save_tree_data()
         save_economy_data()
+        save_reports()
         print("Data saved successfully")
     except Exception as e:
         print("Error saving data: {}".format(e))
@@ -307,6 +313,8 @@ def load_data():
         load_levels_data()
         
         load_economy_data()
+        
+        load_reports()
             
         print("Final state - Channels: {}, Games: {}".format(counting_channels, counting_games))
     except Exception as e:
@@ -359,7 +367,30 @@ def get_economy_settings(guild_id):
             "start_balance": 0,
             "max_cash": 0,
             "max_bank": 0,
-            "audit_channel": None
+            "audit_channel": None,
+            "role_incomes": [],
+            "cooldowns": {
+                "work": 30,
+                "crime": 30,
+                "rob": 30,
+                "blackjack": 30
+            },
+            "crime_settings": {
+                "fail_rate": 50,  # percentage
+                "fine_type": "fixed",  # "fixed" or "percent"
+                "fine_min": 10,
+                "fine_max": 100
+            },
+            "work_settings": {
+                "payout_min": 10,
+                "payout_max": 100
+            },
+            "chat_money": {
+                "enabled": False,
+                "min_amount": 1,
+                "max_amount": 10,
+                "enabled_channels": []
+            }
         }
     return economy_settings[guild_id_str]
 
@@ -380,6 +411,48 @@ def format_money(guild_id, amount):
     settings = get_economy_settings(guild_id)
     return "{}{}".format(settings["currency"], amount)
 
+def save_reports():
+    global cases, message_case_map
+    try:
+        import json
+        with open(DATA_FILE_REPORTS, 'w') as f:
+            json.dump({"cases": cases, "message_case_map": message_case_map}, f, indent=2)
+        print("Reports saved successfully")
+    except Exception as e:
+        print("Error saving reports: {}".format(e))
+
+def load_reports():
+    global cases, message_case_map
+    try:
+        import json
+        if os.path.exists(DATA_FILE_REPORTS):
+            with open(DATA_FILE_REPORTS, 'r') as f:
+                data = json.load(f)
+            cases = data.get("cases", {})
+            message_case_map = data.get("message_case_map", {})
+            open_count = sum(1 for c in cases.values() if c.get("status") == "open")
+            print("Loaded {} cases ({} open)".format(len(cases), open_count))
+        else:
+            cases = {}
+            message_case_map = {}
+    except Exception as e:
+        print("Error loading reports: {}".format(e))
+        cases = {}
+        message_case_map = {}
+
+def get_next_case_number():
+    open_numbers = set()
+    for case_num in cases:
+        if cases[case_num].get("status") == "open":
+            try:
+                open_numbers.add(int(case_num))
+            except (ValueError, TypeError):
+                pass
+    n = 1
+    while n in open_numbers:
+        n += 1
+    return n
+
 @bot.event
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
@@ -388,6 +461,14 @@ async def on_ready():
     global db
     db = setup_database()
     load_data()
+    
+    print("Re-registering persistent views...")
+    for guild_id, tree in tree_data.items():
+        msg_ids = tree.get("tree_view_messages", [])
+        for msg_id in msg_ids:
+            view = TreeView(tree, None)
+            bot.add_view(view, message_id=msg_id)
+            print("  Registered tree view for message {}".format(msg_id))
     
     try:
         synced = await bot.tree.sync()
@@ -1090,27 +1171,42 @@ class ReportModal(ui.Modal, title="Submit a Report"):
         self.interaction = interaction
 
     async def on_submit(self, interaction: discord.Interaction):
-        submitter = self.interaction.user.name
+        submitter = self.interaction.user
         report_type = self.report_type.value
         bug_desc = self.bug_description.value
-
+        
+        case_num = get_next_case_number()
+        case_num_str = str(case_num)
+        
+        cases[case_num_str] = {
+            "submitter_id": submitter.id,
+            "submitter_name": submitter.name,
+            "report_type": report_type,
+            "description": bug_desc,
+            "status": "open"
+        }
+        
         embed = discord.Embed(
-            title="**Report Recieved**",
+            title="**Case #{}**".format(case_num_str),
             color=discord.Color.orange()
         )
-        embed.add_field(name="Submitter", value=f"`{submitter}`", inline=False)
+        embed.add_field(name="Submitter", value="`{}` (<@{}>)".format(submitter.name, submitter.id), inline=False)
         embed.add_field(name="Report Type", value=report_type, inline=False)
-        embed.add_field(name="Bug", value=bug_desc, inline=False)
-
+        embed.add_field(name="Description", value=bug_desc, inline=False)
+        embed.set_footer(text="Reply with !resolve [message] to resolve this case")
+        
         target_user_ids = [775397655576707103, 1417671348767035552]
         for user_id in target_user_ids:
             try:
                 user = await bot.fetch_user(user_id)
-                await user.send(embed=embed)
+                msg = await user.send(embed=embed)
+                message_case_map[str(msg.id)] = case_num_str
             except Exception as e:
-                print("Failed to send report to user {}: {}".format(user_id, e))
-
-        await interaction.response.send_message("Your report has been submitted!", ephemeral=True)
+                print("Failed to send case {} to user {}: {}".format(case_num_str, user_id, e))
+        
+        save_reports()
+        
+        await interaction.response.send_message("Your report has been submitted as **Case #{}**!".format(case_num_str), ephemeral=True)
 
 @bot.tree.command(name="report", description="Submit a bug report")
 async def report(interaction: discord.Interaction):
@@ -1153,7 +1249,7 @@ class ConfigView(ui.View):
         self.guild_id = guild_id
         self.user_id = user_id
     
-    @ui.button(label="Toggle", style=discord.ButtonStyle.primary)
+    @ui.button(label="Toggle", style=discord.ButtonStyle.primary, custom_id="tree_config_toggle")
     async def toggle(self, interaction: discord.Interaction, button: ui.Button):
         tree = tree_data.get(self.guild_id)
         if not tree:
@@ -1237,7 +1333,7 @@ class TreeView(ui.View):
         self.water_queue = []
         self.processing_water = False
     
-    @ui.button(label="💧 Water", style=discord.ButtonStyle.primary)
+    @ui.button(label="💧 Water", style=discord.ButtonStyle.primary, custom_id="tree_water")
     async def water(self, interaction: discord.Interaction, button: ui.Button):
         guild_id = str(interaction.guild.id)
         user_id = str(interaction.user.id)
@@ -1455,7 +1551,12 @@ async def activity_tree(interaction: discord.Interaction, action: str, name: str
         await interaction.response.defer()
         embed = build_tree_embed(tree, starting=False)
         view = TreeView(tree, player)
-        await interaction.followup.send(embed=embed, view=view)
+        msg = await interaction.followup.send(embed=embed, view=view)
+        
+        if "tree_view_messages" not in tree:
+            tree["tree_view_messages"] = []
+        tree["tree_view_messages"].append(msg.id)
+        save_data()
     
     elif action == "leaderboard":
         if channel_id not in tree_channels:
@@ -1640,83 +1741,7 @@ async def log_economy_transaction(guild_id, transaction_type, user_id, amount, d
     
     await channel.send(embed=embed)
 
-@bot.tree.command(name="activity-economy", description="Manage economy activities")
-@discord.app_commands.describe(
-    action="The action to perform",
-    symbol="Currency symbol to use",
-    amount="Amount of money (or 'all' for deposit/withdraw/give/gamble)",
-    target="User to target",
-    role_id="Role ID to target",
-    balance_type="cash or bank",
-    channel_id="Channel ID for audit log",
-    page="Page number for leaderboard",
-    sort_by="What to sort leaderboard by"
-)
-@discord.app_commands.choices(
-    action=[
-        discord.app_commands.Choice(name="set-currency", value="set-currency"),
-        discord.app_commands.Choice(name="set-start-balance", value="set-start-balance"),
-        discord.app_commands.Choice(name="money-audit-log", value="money-audit-log"),
-        discord.app_commands.Choice(name="maximum-balance", value="maximum-balance"),
-        discord.app_commands.Choice(name="add-money", value="add-money"),
-        discord.app_commands.Choice(name="add-money-role", value="add-money-role"),
-        discord.app_commands.Choice(name="remove-money", value="remove-money"),
-        discord.app_commands.Choice(name="remove-money-role", value="remove-money-role"),
-        discord.app_commands.Choice(name="economy-stats", value="economy-stats"),
-        discord.app_commands.Choice(name="deposit", value="deposit"),
-        discord.app_commands.Choice(name="withdraw", value="withdraw"),
-        discord.app_commands.Choice(name="give-money", value="give-money"),
-        discord.app_commands.Choice(name="money", value="money"),
-        discord.app_commands.Choice(name="leaderboard", value="leaderboard"),
-        discord.app_commands.Choice(name="clean-leaderboard", value="clean-leaderboard"),
-        discord.app_commands.Choice(name="reset-money", value="reset-money"),
-        discord.app_commands.Choice(name="reset-economy", value="reset-economy"),
-        discord.app_commands.Choice(name="work", value="work"),
-        discord.app_commands.Choice(name="rob", value="rob"),
-        discord.app_commands.Choice(name="crime", value="crime"),
-        discord.app_commands.Choice(name="blackjack", value="blackjack"),
-        discord.app_commands.Choice(name="roulette", value="roulette")
-    ],
-    balance_type=[
-        discord.app_commands.Choice(name="cash", value="cash"),
-        discord.app_commands.Choice(name="bank", value="bank")
-    ],
-    sort_by=[
-        discord.app_commands.Choice(name="cash", value="cash"),
-        discord.app_commands.Choice(name="bank", value="bank"),
-        discord.app_commands.Choice(name="total", value="total")
-    ]
-)
-async def activity_economy(interaction: discord.Interaction, action: str, symbol: str = None, amount: str = None, target: discord.Member = None, role_id: str = None, balance_type: str = None, channel_id: str = None, page: int = 1, sort_by: str = "total"):
-    amount_int = None
-    if amount is not None:
-        if amount.lower() == "all":
-            amount_int = -1
-        else:
-            try:
-                amount_int = int(amount)
-            except ValueError:
-                pass
-    guild_id = interaction.guild.id
-    user_id = interaction.user.id
-    settings = get_economy_settings(guild_id)
-    
-    admin_required_actions = ["set-currency", "set-start-balance", "money-audit-log", "maximum-balance", "add-money", "add-money-role", "remove-money", "remove-money-role", "economy-stats", "clean-leaderboard", "reset-money", "reset-economy"]
-    
-    if action in admin_required_actions:
-        required_roles = [1467889239512580261]
-        user_roles = [role.id for role in interaction.user.roles]
-        has_permission = any(role_id in user_roles for role_id in required_roles)
-        
-        if not has_permission:
-            error_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command.",
-                color=discord.Color.red()
-            )
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
-            return
-    
+async def _handle_economy_action(interaction, guild_id, user_id, settings, action, amount_int, target, role_id, balance_type, channel_id, page, sort_by):
     if action == "set-currency":
         if not symbol:
             await interaction.response.send_message("Please provide a currency symbol!", ephemeral=True)
@@ -2212,25 +2237,37 @@ async def activity_economy(interaction: discord.Interaction, action: str, symbol
         await interaction.response.send_message(embed=embed)
     
     elif action == "clean-leaderboard":
-        current_members = set(m.id for m in interaction.guild.members)
-        
         keys_to_remove = []
-        for key, data in economy_balances.items():
-            gid, uid = key.split("_")
-            if int(gid) == guild_id:
-                if int(uid) not in current_members:
-                    keys_to_remove.append(key)
+        
+        if target:
+            key = "{}_{}".format(guild_id, target.id)
+            if key in economy_balances:
+                keys_to_remove.append(key)
+        else:
+            current_members = set(m.id for m in interaction.guild.members)
+            for key, data in economy_balances.items():
+                gid, uid = key.split("_")
+                if int(gid) == guild_id:
+                    if int(uid) not in current_members:
+                        keys_to_remove.append(key)
         
         for key in keys_to_remove:
             del economy_balances[key]
         
         save_economy_data()
         
-        embed = discord.Embed(
-            title="Leaderboard Cleaned",
-            description="Removed {} users who are no longer in the server".format(len(keys_to_remove)),
-            color=discord.Color.green()
-        )
+        if target:
+            embed = discord.Embed(
+                title="Leaderboard Cleaned",
+                description="Removed {}'s data from the leaderboard".format(target.display_name),
+                color=discord.Color.green()
+            )
+        else:
+            embed = discord.Embed(
+                title="Leaderboard Cleaned",
+                description="Removed {} users who are no longer in the server".format(len(keys_to_remove)),
+                color=discord.Color.green()
+            )
         await interaction.response.send_message(embed=embed)
     
     elif action == "reset-money":
@@ -2582,10 +2619,195 @@ async def activity_economy(interaction: discord.Interaction, action: str, symbol
         embed.add_field(name="Disclaimer", value="We do not condone illegal gambling in real life.")
         await interaction.response.send_message(embed=embed)
 
+@bot.tree.command(name="activity-economy", description="Economy commands")
+@discord.app_commands.describe(
+    action="The action to perform",
+    symbol="Currency symbol to use",
+    amount="Amount of money (or 'all' for deposit/withdraw/give/gamble)",
+    target="User to target",
+    role_id="Role ID to target",
+    balance_type="cash or bank",
+    channel_id="Channel ID for audit log",
+    page="Page number for leaderboard",
+    sort_by="What to sort leaderboard by"
+)
+@discord.app_commands.choices(
+    action=[
+        discord.app_commands.Choice(name="deposit", value="deposit"),
+        discord.app_commands.Choice(name="withdraw", value="withdraw"),
+        discord.app_commands.Choice(name="give-money", value="give-money"),
+        discord.app_commands.Choice(name="money", value="money"),
+        discord.app_commands.Choice(name="leaderboard", value="leaderboard"),
+        discord.app_commands.Choice(name="work", value="work"),
+        discord.app_commands.Choice(name="rob", value="rob"),
+        discord.app_commands.Choice(name="crime", value="crime"),
+        discord.app_commands.Choice(name="blackjack", value="blackjack"),
+        discord.app_commands.Choice(name="roulette", value="roulette"),
+        discord.app_commands.Choice(name="collect-income", value="collect-income")
+    ],
+    balance_type=[
+        discord.app_commands.Choice(name="cash", value="cash"),
+        discord.app_commands.Choice(name="bank", value="bank")
+    ],
+    sort_by=[
+        discord.app_commands.Choice(name="cash", value="cash"),
+        discord.app_commands.Choice(name="bank", value="bank"),
+        discord.app_commands.Choice(name="total", value="total")
+    ]
+)
+async def activity_economy(interaction: discord.Interaction, action: str, symbol: str = None, amount: str = None, target: discord.Member = None, role_id: str = None, balance_type: str = None, channel_id: str = None, page: int = 1, sort_by: str = "total"):
+    amount_int = None
+    if amount is not None:
+        if amount.lower() == "all":
+            amount_int = -1
+        else:
+            try:
+                amount_int = int(amount)
+            except ValueError:
+                pass
+    guild_id = interaction.guild.id
+    user_id = interaction.user.id
+    settings = get_economy_settings(guild_id)
+    
+    await _handle_economy_action(interaction, guild_id, user_id, settings, action, amount_int, target, role_id, balance_type, channel_id, page, sort_by)
+
+@bot.tree.command(name="activity-economy-admin", description="Admin economy commands")
+@discord.app_commands.describe(
+    action="The action to perform",
+    symbol="Currency symbol to use",
+    amount="Amount of money",
+    target="User to target",
+    role_id="Role ID to target",
+    balance_type="cash or bank",
+    channel_id="Channel ID for audit log",
+    page="Page number for leaderboard",
+    sort_by="What to sort leaderboard by"
+)
+@discord.app_commands.choices(
+    action=[
+        discord.app_commands.Choice(name="set-currency", value="set-currency"),
+        discord.app_commands.Choice(name="set-start-balance", value="set-start-balance"),
+        discord.app_commands.Choice(name="money-audit-log", value="money-audit-log"),
+        discord.app_commands.Choice(name="maximum-balance", value="maximum-balance"),
+        discord.app_commands.Choice(name="add-money", value="add-money"),
+        discord.app_commands.Choice(name="add-money-role", value="add-money-role"),
+        discord.app_commands.Choice(name="remove-money", value="remove-money"),
+        discord.app_commands.Choice(name="remove-money-role", value="remove-money-role"),
+        discord.app_commands.Choice(name="economy-stats", value="economy-stats"),
+        discord.app_commands.Choice(name="clean-leaderboard", value="clean-leaderboard"),
+        discord.app_commands.Choice(name="reset-money", value="reset-money"),
+        discord.app_commands.Choice(name="reset-economy", value="reset-economy"),
+        discord.app_commands.Choice(name="role-income", value="role-income"),
+        discord.app_commands.Choice(name="set-cooldown", value="set-cooldown"),
+        discord.app_commands.Choice(name="set-fine-amount", value="set-fine-amount"),
+        discord.app_commands.Choice(name="set-payout", value="set-payout"),
+        discord.app_commands.Choice(name="set-fail-rate", value="set-fail-rate"),
+        discord.app_commands.Choice(name="set-fine-type", value="set-fine-type"),
+        discord.app_commands.Choice(name="chat-money-amount", value="chat-money-amount"),
+        discord.app_commands.Choice(name="chat-money-channels", value="chat-money-channels")
+    ],
+    balance_type=[
+        discord.app_commands.Choice(name="cash", value="cash"),
+        discord.app_commands.Choice(name="bank", value="bank")
+    ],
+    sort_by=[
+        discord.app_commands.Choice(name="cash", value="cash"),
+        discord.app_commands.Choice(name="bank", value="bank"),
+        discord.app_commands.Choice(name="total", value="total")
+    ]
+)
+async def activity_economy_admin(interaction: discord.Interaction, action: str, symbol: str = None, amount: str = None, target: discord.Member = None, role_id: str = None, balance_type: str = None, channel_id: str = None, page: int = 1, sort_by: str = "total"):
+    amount_int = None
+    if amount is not None:
+        if amount.lower() == "all":
+            amount_int = -1
+        else:
+            try:
+                amount_int = int(amount)
+            except ValueError:
+                pass
+    guild_id = interaction.guild.id
+    user_id = interaction.user.id
+    settings = get_economy_settings(guild_id)
+    
+    required_roles = [1467889239512580261]
+    user_roles = [role.id for role in interaction.user.roles]
+    has_permission = any(role_id in user_roles for role_id in required_roles)
+    
+    if not has_permission:
+        error_embed = discord.Embed(
+            title="Permission Denied",
+            description="You don't have permission to use this command.",
+            color=discord.Color.red()
+        )
+        await interaction.response.send_message(embed=error_embed, ephemeral=True)
+        return
+    
+    await _handle_economy_action(interaction, guild_id, user_id, settings, action, amount_int, target, role_id, balance_type, channel_id, page, sort_by)
+
 @bot.event
 async def on_message(message):
 
     if message.author.bot:
+        return
+    
+    if isinstance(message.channel, discord.DMChannel):
+        target_user_ids = [775397655576707103, 1417671348767035552]
+        if message.author.id in target_user_ids and message.content.startswith("!resolve "):
+            ref_msg_id = str(message.reference.message_id) if message.reference and message.reference.message_id else None
+            case_num = message_case_map.get(ref_msg_id) if ref_msg_id else None
+            
+            if not case_num:
+                no_case_embed = discord.Embed(
+                    title="Error",
+                    description="Reply to a case notification message to resolve it.",
+                    color=discord.Color.red()
+                )
+                await message.channel.send(embed=no_case_embed)
+                return
+            
+            resolve_msg = message.content[len("!resolve "):]
+            case = cases.get(case_num)
+            
+            if not case or case.get("status") != "open":
+                already_embed = discord.Embed(
+                    title="Already Resolved",
+                    description="Case #{} is already resolved.".format(case_num),
+                    color=discord.Color.orange()
+                )
+                await message.channel.send(embed=already_embed)
+                return
+            
+            case["status"] = "resolved"
+            
+            stale_keys = [k for k, v in message_case_map.items() if v == case_num]
+            for k in stale_keys:
+                del message_case_map[k]
+            
+            save_reports()
+            
+            try:
+                submitter = await bot.fetch_user(case["submitter_id"])
+                resolve_embed = discord.Embed(
+                    title="Case #{} Resolved".format(case_num),
+                    color=discord.Color.green()
+                )
+                resolve_embed.add_field(name="Resolved by", value="<@{}>".format(message.author.id), inline=False)
+                resolve_embed.add_field(name="Message", value=resolve_msg, inline=False)
+                await submitter.send(embed=resolve_embed)
+            except Exception as e:
+                print("Failed to notify submitter for case {}: {}".format(case_num, e))
+                await message.channel.send("Failed to notify the submitter, but case has been resolved.")
+                return
+            
+            confirm_embed = discord.Embed(
+                title="Case #{} Resolved".format(case_num),
+                description="The submitter has been notified.",
+                color=discord.Color.green()
+            )
+            await message.channel.send(embed=confirm_embed)
+            return
+        
         return
     
     print(f"=== MESSAGE RECEIVED ===")
@@ -2672,6 +2894,7 @@ async def on_message(message):
         expected_number = current_number + 1
         
         if number == expected_number:
+            counting_caught_up[channel_id] = True
 
             last_user = counting_games[channel_id].get("last_user")
             if last_user == message.author.id:
@@ -2687,6 +2910,25 @@ async def on_message(message):
                 return
             
 
+            await message.add_reaction("✅")
+            counting_games[channel_id]["current_number"] = number
+            counting_games[channel_id]["last_user"] = message.author.id
+            save_data()
+        elif number > expected_number and not counting_caught_up.get(channel_id):
+            last_user = counting_games[channel_id].get("last_user")
+            if last_user == message.author.id:
+                await message.add_reaction("❌")
+                same_person_embed = discord.Embed(
+                    title="Same Person Counted Twice!",
+                    description="You can't count twice in a row! Learning from the old bot! Restarting...",
+                    color=discord.Color.orange()
+                )
+                await message.reply(embed=same_person_embed)
+                counting_games[channel_id] = {"current_number": 0, "active": True, "last_user": None}
+                save_data()
+                return
+            
+            counting_caught_up[channel_id] = True
             await message.add_reaction("✅")
             counting_games[channel_id]["current_number"] = number
             counting_games[channel_id]["last_user"] = message.author.id
