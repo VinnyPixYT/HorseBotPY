@@ -44,12 +44,16 @@ DATA_FILE_TREE_DATA = "tree_data.json"
 DATA_FILE_ECONOMY_SETTINGS = "economy_settings.json"
 DATA_FILE_ECONOMY_BALANCES = "economy_balances.json"
 DATA_FILE_REPORTS = "reports.json"
+DATA_FILE_GAME_SETTINGS = "game_settings.json"
 DB_FILE = 'db/mainDB.sqlite'
 
 talked_recently = set()
 levels_paused = False
 cases = {}
 message_case_map = {}
+game_settings = {}
+user_chickens = {}
+roulette_games = {}
 
 def validate_tree_name(name):
     
@@ -69,6 +73,7 @@ def save_data():
         save_tree_data()
         save_economy_data()
         save_reports()
+        save_game_settings()
         print("Data saved successfully")
     except Exception as e:
         print("Error saving data: {}".format(e))
@@ -315,6 +320,7 @@ def load_data():
         load_economy_data()
         
         load_reports()
+        load_game_settings()
             
         print("Final state - Channels: {}, Games: {}".format(counting_channels, counting_games))
     except Exception as e:
@@ -410,6 +416,57 @@ def save_user_balance(guild_id, user_id):
 def format_money(guild_id, amount):
     settings = get_economy_settings(guild_id)
     return "{}{}".format(settings["currency"], amount)
+
+def get_game_settings():
+    global game_settings
+    if not game_settings:
+        game_settings = {
+            "bet_limits": {
+                "blackjack": {"min": 100, "max": None},
+                "roulette": {"min": 100, "max": None},
+                "higher-or-lower": {"min": 100, "max": None},
+                "chicken-fight": {"min": 100, "max": None},
+                "russian-roulette": {"min": 100, "max": None},
+                "slot-machine": {"min": 100, "max": None}
+            },
+            "blackjack_decks": 3,
+            "game_cooldown": {"usages": 4, "duration": 300},
+            "slot_machine_symbols": [
+                {"symbol": "🍒", "multiplier": 2},
+                {"symbol": "🍋", "multiplier": 3},
+                {"symbol": "🍊", "multiplier": 5},
+                {"symbol": "🍇", "multiplier": 8},
+                {"symbol": "💎", "multiplier": 15},
+                {"symbol": "7️⃣", "multiplier": 25}
+            ],
+            "chicken_fight_winrate": {"start": 50, "max": 70}
+        }
+    return game_settings
+
+def save_game_settings():
+    global game_settings
+    try:
+        import json
+        with open(DATA_FILE_GAME_SETTINGS, 'w') as f:
+            json.dump(game_settings, f, indent=2)
+        print("Game settings saved successfully")
+    except Exception as e:
+        print("Error saving game settings: {}".format(e))
+
+def load_game_settings():
+    global game_settings
+    try:
+        import json
+        if os.path.exists(DATA_FILE_GAME_SETTINGS):
+            with open(DATA_FILE_GAME_SETTINGS, 'r') as f:
+                loaded = json.load(f)
+            game_settings = loaded
+            print("Loaded game settings")
+        else:
+            get_game_settings()
+    except Exception as e:
+        print("Error loading game settings: {}".format(e))
+        get_game_settings()
 
 def save_reports():
     global cases, message_case_map
@@ -2462,162 +2519,6 @@ async def _handle_economy_action(interaction, guild_id, user_id, settings, actio
             )
             embed.set_footer(text="New balance: {}".format(format_money(guild_id, balance["cash"] + balance["bank"])))
             await interaction.response.send_message(embed=embed)
-    
-    elif action == "blackjack":
-        if not amount:
-            await interaction.response.send_message("Please provide a bet amount!", ephemeral=True)
-            return
-        
-        bet_int = None
-        if amount.lower() == "all":
-            bet_int = get_user_balance(guild_id, user_id)["cash"]
-        else:
-            try:
-                bet_int = int(amount)
-            except ValueError:
-                pass
-        
-        if bet_int is None or bet_int <= 0:
-            await interaction.response.send_message("Invalid bet amount! Use a number or 'all'.", ephemeral=True)
-            return
-        
-        balance = get_user_balance(guild_id, user_id)
-        if bet_int > balance["cash"]:
-            await interaction.response.send_message("You don't have enough cash!", ephemeral=True)
-            return
-        
-        def get_card():
-            ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
-            return random.choice(ranks)
-        
-        def card_value(card):
-            if card in ["J", "Q", "K"]:
-                return 10
-            elif card == "A":
-                return 11
-            else:
-                return int(card)
-        
-        def hand_value(hand):
-            value = sum(card_value(card) for card in hand)
-            aces = hand.count("A")
-            while value > 21 and aces > 0:
-                value -= 10
-                aces -= 1
-            return value
-        
-        player_hand = [get_card(), get_card()]
-        dealer_hand = [get_card(), get_card()]
-        
-        player_total = hand_value(player_hand)
-        
-        while hand_value(dealer_hand) < 17:
-            dealer_hand.append(get_card())
-        
-        dealer_total = hand_value(dealer_hand)
-        
-        result = ""
-        color = discord.Color.red()
-        
-        if player_total > 21:
-            result = "You busted! Dealer wins."
-            balance["cash"] -= bet_int
-        elif dealer_total > 21:
-            result = "Dealer busts! You win!"
-            balance["cash"] += bet_int
-            color = discord.Color.green()
-        elif player_total > dealer_total:
-            result = "You win!"
-            balance["cash"] += bet_int
-            color = discord.Color.green()
-        elif player_total < dealer_total:
-            result = "Dealer wins."
-            balance["cash"] -= bet_int
-        else:
-            result = "Push! It's a tie."
-        
-        save_user_balance(guild_id, user_id)
-        
-        embed = discord.Embed(
-            title="Blackjack",
-            description="Your hand: {} ({})\nDealer hand: {} ({})\n\n**{}**".format(
-                " ".join(player_hand), player_total,
-                " ".join(dealer_hand), dealer_total,
-                result
-            ),
-            color=color
-        )
-        embed.set_footer(text="Your balance: {}".format(format_money(guild_id, balance["cash"])))
-        embed.add_field(name="Disclaimer", value="We do not condone illegal gambling in real life.")
-        await interaction.response.send_message(embed=embed)
-    
-    elif action == "roulette":
-        if not amount:
-            await interaction.response.send_message("Please provide a bet amount!", ephemeral=True)
-            return
-        
-        bet_int = None
-        if amount.lower() == "all":
-            bet_int = get_user_balance(guild_id, user_id)["cash"]
-        else:
-            try:
-                bet_int = int(amount)
-            except ValueError:
-                pass
-        
-        if bet_int is None or bet_int <= 0:
-            await interaction.response.send_message("Invalid bet amount! Use a number or 'all'.", ephemeral=True)
-            return
-        
-        balance = get_user_balance(guild_id, user_id)
-        if bet_int > balance["cash"]:
-            await interaction.response.send_message("You don't have enough cash!", ephemeral=True)
-            return
-        
-        numbers = list(range(0, 37))
-        red_numbers = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]
-        black_numbers = [2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35]
-        
-        winning_number = random.choice(numbers)
-        
-        is_red = winning_number in red_numbers
-        is_black = winning_number in black_numbers
-        is_green = winning_number == 0
-        
-        outcomes = []
-        for i in range(0, 37):
-            if i in red_numbers:
-                outcomes.append(("red", i))
-            elif i in black_numbers:
-                outcomes.append(("black", i))
-            else:
-                outcomes.append(("green", i))
-        
-        result_text = "The ball landed on ** {} **!".format(winning_number)
-        
-        color = discord.Color.red()
-        
-        won = random.choice([True, False])
-        
-        if won:
-            win_amount = bet_int
-            balance["cash"] += win_amount
-            result_text += "\n\nYou won {}!".format(format_money(guild_id, win_amount))
-            color = discord.Color.green()
-        else:
-            balance["cash"] -= bet_int
-            result_text += "\n\nYou lost {}.".format(format_money(guild_id, bet_int))
-        
-        save_user_balance(guild_id, user_id)
-        
-        embed = discord.Embed(
-            title="Roulette",
-            description=result_text,
-            color=color
-        )
-        embed.set_footer(text="Your balance: {}".format(format_money(guild_id, balance["cash"])))
-        embed.add_field(name="Disclaimer", value="We do not condone illegal gambling in real life.")
-        await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="activity-economy", description="Economy commands")
 @discord.app_commands.describe(
@@ -2641,8 +2542,6 @@ async def _handle_economy_action(interaction, guild_id, user_id, settings, actio
         discord.app_commands.Choice(name="work", value="work"),
         discord.app_commands.Choice(name="rob", value="rob"),
         discord.app_commands.Choice(name="crime", value="crime"),
-        discord.app_commands.Choice(name="blackjack", value="blackjack"),
-        discord.app_commands.Choice(name="roulette", value="roulette"),
         discord.app_commands.Choice(name="collect-income", value="collect-income")
     ],
     balance_type=[
@@ -2744,6 +2643,591 @@ async def activity_economy_admin(interaction: discord.Interaction, action: str, 
         return
     
     await _handle_economy_action(interaction, guild_id, user_id, settings, action, amount_int, target, role_id, balance_type, channel_id, page, sort_by)
+
+RED_NUMBERS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]
+BLACK_NUMBERS = [2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35]
+
+@bot.tree.command(name="activity-games", description="Play games and manage game settings")
+@discord.app_commands.describe(
+    action="The action to perform",
+    game="The game to target (for set-bet-limit)",
+    limit_type="min or max (for set-bet-limit)",
+    amount="Bet amount or limit amount or cooldown duration",
+    decks="Number of decks for blackjack (for set-blackjack-decks)",
+    usages="Number of usages (for set-game-cooldown)",
+    symbol="Symbol to add (for slot-machine-symbol)",
+    multiplier="Multiplier for symbol (for slot-machine-symbol)",
+    percentage="Percentage value (for chicken-fight-winrate)",
+    space="Roulette betting space (single number, odd/even, red/black, or range)",
+    target="User to target (for russian-roulette)",
+    options="Max number or comma-separated options (for roll)",
+    guess="Your guess for higher-lower (higher/lower/same)"
+)
+@discord.app_commands.choices(
+    action=[
+        discord.app_commands.Choice(name="blackjack", value="blackjack"),
+        discord.app_commands.Choice(name="roulette", value="roulette"),
+        discord.app_commands.Choice(name="roulette-info", value="roulette-info"),
+        discord.app_commands.Choice(name="set-bet-limit", value="set-bet-limit"),
+        discord.app_commands.Choice(name="set-blackjack-decks", value="set-blackjack-decks"),
+        discord.app_commands.Choice(name="set-game-cooldown", value="set-game-cooldown"),
+        discord.app_commands.Choice(name="slot-machine-symbol", value="slot-machine-symbol"),
+        discord.app_commands.Choice(name="chicken-fight-winrate", value="chicken-fight-winrate"),
+        discord.app_commands.Choice(name="higher-lower", value="higher-lower"),
+        discord.app_commands.Choice(name="chicken-fight", value="chicken-fight"),
+        discord.app_commands.Choice(name="russian-roulette", value="russian-roulette"),
+        discord.app_commands.Choice(name="roll", value="roll"),
+        discord.app_commands.Choice(name="slot-machine", value="slot-machine")
+    ]
+)
+@discord.app_commands.choices(
+    guess=[
+        discord.app_commands.Choice(name="higher", value="higher"),
+        discord.app_commands.Choice(name="lower", value="lower"),
+        discord.app_commands.Choice(name="same", value="same")
+    ]
+)
+async def activity_games(interaction: discord.Interaction, action: str, game: str = None, limit_type: str = None, amount: str = None, decks: int = None, usages: int = None, symbol: str = None, multiplier: float = None, percentage: str = None, space: str = None, target: discord.Member = None, options: str = None, guess: str = None):
+    guild_id = interaction.guild.id
+    user_id = interaction.user.id
+    settings = get_game_settings()
+    
+    admin_actions = ["set-bet-limit", "set-blackjack-decks", "set-game-cooldown", "slot-machine-symbol", "chicken-fight-winrate"]
+    
+    if action in admin_actions:
+        required_roles = [1467889239512580261]
+        user_roles = [role.id for role in interaction.user.roles]
+        has_permission = any(role_id in user_roles for role_id in required_roles)
+        if not has_permission:
+            error_embed = discord.Embed(title="Permission Denied", description="You don't have permission to use this command.", color=discord.Color.red())
+            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+            return
+    
+    if action == "set-bet-limit":
+        if not game or not limit_type or amount is None:
+            await interaction.response.send_message("Please provide game, min/max, and amount!", ephemeral=True)
+            return
+        try:
+            bet_amount = int(amount)
+        except ValueError:
+            await interaction.response.send_message("Invalid amount!", ephemeral=True)
+            return
+        if game not in settings["bet_limits"]:
+            await interaction.response.send_message("Invalid game! Options: {}".format(", ".join(settings["bet_limits"].keys())), ephemeral=True)
+            return
+        if limit_type not in ("min", "max"):
+            await interaction.response.send_message("Use 'min' or 'max' for limit_type!", ephemeral=True)
+            return
+        if bet_amount < 0:
+            await interaction.response.send_message("Amount cannot be negative!", ephemeral=True)
+            return
+        if limit_type == "min":
+            settings["bet_limits"][game]["min"] = bet_amount
+        else:
+            settings["bet_limits"][game]["max"] = bet_amount if bet_amount > 0 else None
+        save_game_settings()
+        embed = discord.Embed(title="Bet Limit Set", description="{} {} bet limit for {} set to {}".format(game, limit_type, game, bet_amount if limit_type == "min" else (bet_amount if bet_amount > 0 else "none")), color=discord.Color.green())
+        await interaction.response.send_message(embed=embed)
+    
+    elif action == "set-blackjack-decks":
+        if decks is None or decks < 1 or decks > 10:
+            await interaction.response.send_message("Please provide a number between 1 and 10!", ephemeral=True)
+            return
+        settings["blackjack_decks"] = decks
+        save_game_settings()
+        embed = discord.Embed(title="Blackjack Decks Set", description="Using {} decks for blackjack.".format(decks), color=discord.Color.green())
+        await interaction.response.send_message(embed=embed)
+    
+    elif action == "set-game-cooldown":
+        if usages is None or not amount:
+            await interaction.response.send_message("Please provide usages and duration! (eg. 4 5m)", ephemeral=True)
+            return
+        duration_str = amount
+        duration_seconds = 0
+        if duration_str.endswith("m"):
+            duration_seconds = int(duration_str[:-1]) * 60
+        elif duration_str.endswith("s"):
+            duration_seconds = int(duration_str[:-1])
+        elif duration_str.endswith("h"):
+            duration_seconds = int(duration_str[:-1]) * 3600
+        else:
+            try:
+                duration_seconds = int(duration_str)
+            except ValueError:
+                await interaction.response.send_message("Invalid duration! Use format like 5m, 30s, 1h.", ephemeral=True)
+                return
+        settings["game_cooldown"]["usages"] = usages
+        settings["game_cooldown"]["duration"] = duration_seconds
+        save_game_settings()
+        embed = discord.Embed(title="Game Cooldown Set", description="{} usages every {} seconds.".format(usages, duration_seconds), color=discord.Color.green())
+        await interaction.response.send_message(embed=embed)
+    
+    elif action == "slot-machine-symbol":
+        if not symbol:
+            await interaction.response.send_message("Provide a symbol to add or 'remove all' to reset.", ephemeral=True)
+            return
+        if symbol.lower() == "remove all":
+            settings["slot_machine_symbols"] = [
+                {"symbol": "🍒", "multiplier": 2},
+                {"symbol": "🍋", "multiplier": 3},
+                {"symbol": "🍊", "multiplier": 5},
+                {"symbol": "🍇", "multiplier": 8},
+                {"symbol": "💎", "multiplier": 15},
+                {"symbol": "7️⃣", "multiplier": 25}
+            ]
+            save_game_settings()
+            await interaction.response.send_message("Slot machine symbols reset to defaults.")
+            return
+        mult = multiplier if multiplier else 1.0
+        settings["slot_machine_symbols"].append({"symbol": symbol, "multiplier": mult})
+        save_game_settings()
+        embed = discord.Embed(title="Symbol Added", description="Added {} with multiplier {}.".format(symbol, mult), color=discord.Color.green())
+        await interaction.response.send_message(embed=embed)
+    
+    elif action == "chicken-fight-winrate":
+        if not percentage:
+            await interaction.response.send_message("Please provide start or max and a percentage! (eg. start 50%)", ephemeral=True)
+            return
+        pct = percentage.replace("%", "")
+        try:
+            pct_val = int(pct)
+        except ValueError:
+            await interaction.response.send_message("Invalid percentage!", ephemeral=True)
+            return
+        if pct_val < 0 or pct_val > 100:
+            await interaction.response.send_message("Percentage must be between 0 and 100!", ephemeral=True)
+            return
+        if limit_type == "start":
+            settings["chicken_fight_winrate"]["start"] = pct_val
+        elif limit_type == "max":
+            settings["chicken_fight_winrate"]["max"] = pct_val
+        else:
+            await interaction.response.send_message("Specify 'start' or 'max' as the limit_type!", ephemeral=True)
+            return
+        save_game_settings()
+        embed = discord.Embed(title="Win Rate Set", description="Chicken fight {} win rate set to {}%".format(limit_type, pct_val), color=discord.Color.green())
+        await interaction.response.send_message(embed=embed)
+    
+    elif action == "roulette-info":
+        embed = discord.Embed(title="Roulette Information", color=discord.Color.blue())
+        embed.add_field(name="Betting Spaces", value="""Single number (0-36): 35x payout
+1-12 / 13-24 / 25-36: 2x payout
+odd / even: 1x payout
+red / black: 1x payout""", inline=False)
+        embed.add_field(name="Roulette Layout", value="""0: Green
+Red: 1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36
+Black: 2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35""", inline=False)
+        await interaction.response.send_message(embed=embed)
+    
+    elif action == "blackjack":
+        if not amount:
+            await interaction.response.send_message("Please provide a bet amount!", ephemeral=True)
+            return
+        bet_int = None
+        if amount.lower() == "all":
+            bet_int = get_user_balance(guild_id, user_id)["cash"]
+        else:
+            try:
+                bet_int = int(amount)
+            except ValueError:
+                pass
+        if bet_int is None or bet_int <= 0:
+            await interaction.response.send_message("Invalid bet amount!", ephemeral=True)
+            return
+        min_bet = settings["bet_limits"]["blackjack"]["min"]
+        max_bet = settings["bet_limits"]["blackjack"]["max"]
+        if bet_int < min_bet:
+            await interaction.response.send_message("Minimum bet is {}!".format(format_money(guild_id, min_bet)), ephemeral=True)
+            return
+        if max_bet and bet_int > max_bet:
+            await interaction.response.send_message("Maximum bet is {}!".format(format_money(guild_id, max_bet)), ephemeral=True)
+            return
+        balance = get_user_balance(guild_id, user_id)
+        if bet_int > balance["cash"]:
+            await interaction.response.send_message("You don't have enough cash!", ephemeral=True)
+            return
+        decks = settings["blackjack_decks"]
+        shoe = []
+        ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
+        for _ in range(decks):
+            for r in ranks:
+                shoe.append(r)
+        random.shuffle(shoe)
+        def draw():
+            return shoe.pop()
+        def card_value(card):
+            if card in ["J", "Q", "K"]:
+                return 10
+            elif card == "A":
+                return 11
+            else:
+                return int(card)
+        def hand_value(hand):
+            value = sum(card_value(c) for c in hand)
+            aces = hand.count("A")
+            while value > 21 and aces > 0:
+                value -= 10
+                aces -= 1
+            return value
+        player_hand = [draw(), draw()]
+        dealer_hand = [draw(), draw()]
+        player_total = hand_value(player_hand)
+        while hand_value(dealer_hand) < 17:
+            dealer_hand.append(draw())
+        dealer_total = hand_value(dealer_hand)
+        result = ""
+        color = discord.Color.red()
+        if player_total > 21:
+            result = "You busted! Dealer wins."
+            balance["cash"] -= bet_int
+        elif dealer_total > 21:
+            result = "Dealer busts! You win!"
+            balance["cash"] += bet_int
+            color = discord.Color.green()
+        elif player_total > dealer_total:
+            result = "You win!"
+            balance["cash"] += bet_int
+            color = discord.Color.green()
+        elif player_total < dealer_total:
+            result = "Dealer wins."
+            balance["cash"] -= bet_int
+        else:
+            result = "Push! It's a tie."
+        save_user_balance(guild_id, user_id)
+        embed = discord.Embed(title="Blackjack ({} decks)".format(decks), description="Your hand: {} ({})\nDealer hand: {} ({})\n\n**{}**".format(" ".join(player_hand), player_total, " ".join(dealer_hand), dealer_total, result), color=color)
+        embed.set_footer(text="Your balance: {}".format(format_money(guild_id, balance["cash"])))
+        embed.add_field(name="Disclaimer", value="We do not condone illegal gambling in real life.")
+        await interaction.response.send_message(embed=embed)
+    
+    elif action == "roulette":
+        if not amount:
+            await interaction.response.send_message("Please provide a bet amount!", ephemeral=True)
+            return
+        bet_int = None
+        if amount.lower() == "all":
+            bet_int = get_user_balance(guild_id, user_id)["cash"]
+        else:
+            try:
+                bet_int = int(amount)
+            except ValueError:
+                pass
+        if bet_int is None or bet_int <= 0:
+            await interaction.response.send_message("Invalid bet amount!", ephemeral=True)
+            return
+        min_bet = settings["bet_limits"]["roulette"]["min"]
+        max_bet = settings["bet_limits"]["roulette"]["max"]
+        if bet_int < min_bet:
+            await interaction.response.send_message("Minimum bet is {}!".format(format_money(guild_id, min_bet)), ephemeral=True)
+            return
+        if max_bet and bet_int > max_bet:
+            await interaction.response.send_message("Maximum bet is {}!".format(format_money(guild_id, max_bet)), ephemeral=True)
+            return
+        balance = get_user_balance(guild_id, user_id)
+        if bet_int > balance["cash"]:
+            await interaction.response.send_message("You don't have enough cash!", ephemeral=True)
+            return
+        if not space:
+            await interaction.response.send_message("Please specify a betting space! Use /activity-games roulette-info to see options.", ephemeral=True)
+            return
+        space_lower = space.lower()
+        matched_space = None
+        payout = 0
+        try:
+            num = int(space)
+            if 0 <= num <= 36:
+                matched_space = ("straight", num)
+                payout = 35
+        except ValueError:
+            pass
+        if not matched_space:
+            if space_lower in ("odd", "even"):
+                matched_space = ("even_money", space_lower)
+                payout = 1
+            elif space_lower in ("red", "rd", "black"):
+                matched_space = ("even_money", space_lower)
+                payout = 1
+            elif space_lower in ("1-12", "13-24", "25-36"):
+                matched_space = ("dozen", space_lower)
+                payout = 2
+        if not matched_space:
+            await interaction.response.send_message("Invalid betting space! Use /activity-games roulette-info to see options.", ephemeral=True)
+            return
+        winning_number = random.randint(0, 36)
+        is_red = winning_number in RED_NUMBERS
+        is_black = winning_number in BLACK_NUMBERS
+        is_green = winning_number == 0
+        won = False
+        space_type, space_value = matched_space
+        if space_type == "straight":
+            if winning_number == space_value:
+                won = True
+        elif space_type == "even_money":
+            if space_value in ("red", "rd") and is_red:
+                won = True
+            elif space_value == "black" and is_black:
+                won = True
+            elif space_value == "odd" and winning_number % 2 == 1 and not is_green:
+                won = True
+            elif space_value == "even" and winning_number % 2 == 0 and not is_green and winning_number != 0:
+                won = True
+        elif space_type == "dozen":
+            if space_value == "1-12" and 1 <= winning_number <= 12:
+                won = True
+            elif space_value == "13-24" and 13 <= winning_number <= 24:
+                won = True
+            elif space_value == "25-36" and 25 <= winning_number <= 36:
+                won = True
+        color_name = "green" if is_green else ("red" if is_red else "black")
+        result_text = "The ball landed on **{} {}**!".format(winning_number, color_name)
+        color = discord.Color.red()
+        if won:
+            win_amount = bet_int * payout
+            balance["cash"] += win_amount
+            result_text += "\n\nYou won {}! ({}x payout)".format(format_money(guild_id, win_amount), payout)
+            color = discord.Color.green()
+        else:
+            balance["cash"] -= bet_int
+            result_text += "\n\nYou lost {}.".format(format_money(guild_id, bet_int))
+        save_user_balance(guild_id, user_id)
+        embed = discord.Embed(title="Roulette - Bet on {}".format(space), description=result_text, color=color)
+        embed.set_footer(text="Your balance: {}".format(format_money(guild_id, balance["cash"])))
+        embed.add_field(name="Disclaimer", value="We do not condone illegal gambling in real life.")
+        await interaction.response.send_message(embed=embed)
+    
+    elif action == "higher-lower":
+        if not guess or guess not in ("higher", "lower", "same"):
+            await interaction.response.send_message("Please choose higher, lower, or same as your guess!", ephemeral=True)
+            return
+        if not amount:
+            await interaction.response.send_message("Please provide a bet amount!", ephemeral=True)
+            return
+        bet_int = None
+        if amount.lower() == "all":
+            bet_int = get_user_balance(guild_id, user_id)["cash"]
+        else:
+            try:
+                bet_int = int(amount)
+            except ValueError:
+                pass
+        if bet_int is None or bet_int <= 0:
+            await interaction.response.send_message("Invalid bet amount!", ephemeral=True)
+            return
+        min_bet = settings["bet_limits"]["higher-or-lower"]["min"]
+        max_bet = settings["bet_limits"]["higher-or-lower"]["max"]
+        if bet_int < min_bet:
+            await interaction.response.send_message("Minimum bet is {}!".format(format_money(guild_id, min_bet)), ephemeral=True)
+            return
+        if max_bet and bet_int > max_bet:
+            await interaction.response.send_message("Maximum bet is {}!".format(format_money(guild_id, max_bet)), ephemeral=True)
+            return
+        balance = get_user_balance(guild_id, user_id)
+        if bet_int > balance["cash"]:
+            await interaction.response.send_message("You don't have enough cash!", ephemeral=True)
+            return
+        ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
+        def card_value(card):
+            return ranks.index(card)
+        card1 = random.choice(ranks)
+        card2 = random.choice(ranks)
+        val1 = card_value(card1)
+        val2 = card_value(card2)
+        if val2 > val1:
+            actual = "higher"
+        elif val2 < val1:
+            actual = "lower"
+        else:
+            actual = "same"
+        correct = guess == actual
+        result_text = "Your card: **{}**\n".format(card1)
+        color = discord.Color.red()
+        if correct:
+            result_text += "Next card: **{}** - {}! You guessed right!".format(card2, actual.capitalize())
+            balance["cash"] += bet_int
+            color = discord.Color.green()
+        else:
+            result_text += "Next card: **{}** - {}! You guessed **{}**.".format(card2, actual.capitalize(), guess)
+            balance["cash"] -= bet_int
+        save_user_balance(guild_id, user_id)
+        embed = discord.Embed(title="Higher or Lower", description=result_text, color=color)
+        embed.set_footer(text="Your balance: {}".format(format_money(guild_id, balance["cash"])))
+        await interaction.response.send_message(embed=embed)
+    
+    elif action == "chicken-fight":
+        if not amount:
+            await interaction.response.send_message("Please provide a bet amount!", ephemeral=True)
+            return
+        bet_int = None
+        if amount.lower() == "all":
+            bet_int = get_user_balance(guild_id, user_id)["cash"]
+        else:
+            try:
+                bet_int = int(amount)
+            except ValueError:
+                pass
+        if bet_int is None or bet_int <= 0:
+            await interaction.response.send_message("Invalid bet amount!", ephemeral=True)
+            return
+        min_bet = settings["bet_limits"]["chicken-fight"]["min"]
+        max_bet = settings["bet_limits"]["chicken-fight"]["max"]
+        if bet_int < min_bet:
+            await interaction.response.send_message("Minimum bet is {}!".format(format_money(guild_id, min_bet)), ephemeral=True)
+            return
+        if max_bet and bet_int > max_bet:
+            await interaction.response.send_message("Maximum bet is {}!".format(format_money(guild_id, max_bet)), ephemeral=True)
+            return
+        balance = get_user_balance(guild_id, user_id)
+        if bet_int > balance["cash"]:
+            await interaction.response.send_message("You don't have enough cash!", ephemeral=True)
+            return
+        uid_str = str(user_id)
+        chicken = user_chickens.get(uid_str, {"wins": 0})
+        start_rate = settings["chicken_fight_winrate"]["start"]
+        max_rate = settings["chicken_fight_winrate"]["max"]
+        win_rate = min(start_rate + chicken["wins"], max_rate)
+        roll = random.randint(1, 100)
+        won = roll <= win_rate
+        color = discord.Color.red()
+        result_text = "Your chicken struts into the ring...\nWin chance: {}%\n".format(win_rate)
+        if won:
+            chicken["wins"] = chicken.get("wins", 0) + 1
+            result_text += "Your chicken WINS! 🐔💪"
+            balance["cash"] += bet_int
+            color = discord.Color.green()
+        else:
+            chicken["wins"] = 0
+            result_text += "Your chicken lost... 🐔💀"
+            balance["cash"] -= bet_int
+        user_chickens[uid_str] = chicken
+        save_user_balance(guild_id, user_id)
+        embed = discord.Embed(title="Chicken Fight", description=result_text, color=color)
+        embed.set_footer(text="Your balance: {}".format(format_money(guild_id, balance["cash"])))
+        await interaction.response.send_message(embed=embed)
+    
+    elif action == "russian-roulette":
+        if not target:
+            await interaction.response.send_message("Please mention a player to play against!", ephemeral=True)
+            return
+        if target.id == user_id:
+            await interaction.response.send_message("You can't play Russian Roulette with yourself!", ephemeral=True)
+            return
+        if not amount:
+            await interaction.response.send_message("Please provide a bet amount!", ephemeral=True)
+            return
+        bet_int = None
+        if amount.lower() == "all":
+            bet_int = get_user_balance(guild_id, user_id)["cash"]
+        else:
+            try:
+                bet_int = int(amount)
+            except ValueError:
+                pass
+        if bet_int is None or bet_int <= 0:
+            await interaction.response.send_message("Invalid bet amount!", ephemeral=True)
+            return
+        min_bet = settings["bet_limits"]["russian-roulette"]["min"]
+        max_bet = settings["bet_limits"]["russian-roulette"]["max"]
+        if bet_int < min_bet:
+            await interaction.response.send_message("Minimum bet is {}!".format(format_money(guild_id, min_bet)), ephemeral=True)
+            return
+        if max_bet and bet_int > max_bet:
+            await interaction.response.send_message("Maximum bet is {}!".format(format_money(guild_id, max_bet)), ephemeral=True)
+            return
+        balance = get_user_balance(guild_id, user_id)
+        if bet_int > balance["cash"]:
+            await interaction.response.send_message("You don't have enough cash!", ephemeral=True)
+            return
+        target_balance = get_user_balance(guild_id, target.id)
+        if bet_int > target_balance["cash"]:
+            await interaction.response.send_message("{} doesn't have enough cash!".format(target.display_name), ephemeral=True)
+            return
+        chamber = random.randint(1, 6)
+        loser_id = user_id if chamber <= 3 else target.id
+        winner_id = target.id if loser_id == user_id else user_id
+        winner_balance = get_user_balance(guild_id, winner_id)
+        loser_balance = get_user_balance(guild_id, loser_id)
+        loser_balance["cash"] -= bet_int
+        winner_balance["cash"] += bet_int
+        save_user_balance(guild_id, loser_id)
+        save_user_balance(guild_id, winner_id)
+        loser = interaction.guild.get_member(loser_id)
+        embed = discord.Embed(title="🔫 Russian Roulette", description="The chamber was pulled...\n\n<@{}> loses! 💀\n\n<@{}> wins {}!".format(loser_id, winner_id, format_money(guild_id, bet_int)), color=discord.Color.red())
+        await interaction.response.send_message(embed=embed)
+        if loser:
+            try:
+                await loser.timeout(discord.utils.utcnow() + timedelta(minutes=5), reason="Lost Russian Roulette")
+            except:
+                pass
+    
+    elif action == "roll":
+        if not options:
+            await interaction.response.send_message("Provide a number (e.g. 6) or comma-separated options!", ephemeral=True)
+            return
+        if "," in options:
+            choices_list = [opt.strip() for opt in options.split(",")]
+            result = random.choice(choices_list)
+            await interaction.response.send_message("🎲 The chosen option is: **{}**!".format(result))
+        else:
+            try:
+                max_num = int(options)
+                if max_num < 1:
+                    await interaction.response.send_message("Number must be at least 1!", ephemeral=True)
+                    return
+                result = random.randint(1, max_num)
+                await interaction.response.send_message("🎲 You rolled a **{}**! (1-{})".format(result, max_num))
+            except ValueError:
+                await interaction.response.send_message("Invalid input! Use a number or comma-separated options.", ephemeral=True)
+    
+    elif action == "slot-machine":
+        if not amount:
+            await interaction.response.send_message("Please provide a bet amount!", ephemeral=True)
+            return
+        bet_int = None
+        if amount.lower() == "all":
+            bet_int = get_user_balance(guild_id, user_id)["cash"]
+        else:
+            try:
+                bet_int = int(amount)
+            except ValueError:
+                pass
+        if bet_int is None or bet_int <= 0:
+            await interaction.response.send_message("Invalid bet amount!", ephemeral=True)
+            return
+        min_bet = settings["bet_limits"]["slot-machine"]["min"]
+        max_bet = settings["bet_limits"]["slot-machine"]["max"]
+        if bet_int < min_bet:
+            await interaction.response.send_message("Minimum bet is {}!".format(format_money(guild_id, min_bet)), ephemeral=True)
+            return
+        if max_bet and bet_int > max_bet:
+            await interaction.response.send_message("Maximum bet is {}!".format(format_money(guild_id, max_bet)), ephemeral=True)
+            return
+        balance = get_user_balance(guild_id, user_id)
+        if bet_int > balance["cash"]:
+            await interaction.response.send_message("You don't have enough cash!", ephemeral=True)
+            return
+        symbols = [s["symbol"] for s in settings["slot_machine_symbols"]]
+        multipliers = {s["symbol"]: s["multiplier"] for s in settings["slot_machine_symbols"]}
+        grid = [[random.choice(symbols) for _ in range(3)] for _ in range(3)]
+        middle_row = grid[1]
+        result_text = "```\n"
+        for row in grid:
+            result_text += "  ".join(row) + "\n"
+        result_text += "```\n"
+        color = discord.Color.red()
+        if middle_row[0] == middle_row[1] == middle_row[2]:
+            sym = middle_row[0]
+            win_mult = multipliers.get(sym, 1)
+            win_amount = int(bet_int * win_mult)
+            balance["cash"] += win_amount
+            result_text += "JACKPOT! Three {} in a row! You won {}! ({}x multiplier)".format(sym, format_money(guild_id, win_amount), win_mult)
+            color = discord.Color.green()
+        else:
+            balance["cash"] -= bet_int
+            result_text += "No match. You lost {}.".format(format_money(guild_id, bet_int))
+        save_user_balance(guild_id, user_id)
+        embed = discord.Embed(title="🎰 Slot Machine", description=result_text, color=color)
+        embed.set_footer(text="Your balance: {}".format(format_money(guild_id, balance["cash"])))
+        await interaction.response.send_message(embed=embed)
+
 
 @bot.event
 async def on_message(message):
