@@ -552,8 +552,8 @@ async def on_ready():
     except Exception as e:
         print("Error sending startup message: {}".format(e))
 
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="VinnyPix"))
-    print("Presence set to: Watching VinnyPix")
+    await bot.change_presence(activity=discord.Game(name="in the server | vinnypix.ca"))
+    print("Presence set to: Playing in the server | vinnypix.ca")
 
     print("Bot ready!")
 
