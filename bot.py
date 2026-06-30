@@ -3635,11 +3635,10 @@ async def send_shutdown_message():
 def signal_handler(sig, frame):
     
     print("\nShutdown signal received...")
+    import requests
+    import time
     if bot.is_ready():
-
         try:
-            import requests
-            import time
             
 
             token = os.getenv('DISCORD_TOKEN')
