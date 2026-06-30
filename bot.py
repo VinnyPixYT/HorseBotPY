@@ -54,6 +54,10 @@ message_case_map = {}
 game_settings = {}
 user_chickens = {}
 roulette_games = {}
+suggestion_forward_map = {}
+suggestion_pending_reason = {}
+SUGGESTION_CHANNEL_ID = 1521535259471253595
+VNYPIX_USER_ID = 775397655576707103
 
 def validate_tree_name(name):
     
@@ -3360,12 +3364,46 @@ async def on_message(message):
 
             return
         
+        if message.author.id == VNYPIX_USER_ID and message.reference and message.reference.message_id:
+            ref_id = message.reference.message_id
+            if ref_id in suggestion_pending_reason:
+                info = suggestion_pending_reason[ref_id]
+                status = info["status"]
+                forward_id = info["forwarded_msg_id"]
+                original = suggestion_forward_map.get(forward_id)
+                if original:
+                    channel = bot.get_channel(original["channel_id"])
+                    if channel:
+                        try:
+                            orig_msg = await channel.fetch_message(original["message_id"])
+                            await orig_msg.reply("VinnyPix has {} your message. Reason: {}".format(status, message.content))
+                        except:
+                            await channel.send("<@{}> VinnyPix has {} your message. Reason: {}".format(original["author_id"], status, message.content))
+                if forward_id in suggestion_forward_map:
+                    del suggestion_forward_map[forward_id]
+                del suggestion_pending_reason[ref_id]
+                await message.channel.send("Response sent to the suggestion channel.")
+                return
+        
         return
     
     print(f"=== MESSAGE RECEIVED ===")
     print(f"Message: \"{message.content}\"")
     print(f"Sender: \"{message.author.name}\" | \"{message.author.display_name}\"")
     print(f"Channel: \"{message.channel.name}\"")
+    
+    if message.channel.id == SUGGESTION_CHANNEL_ID:
+        vnypx = bot.get_user(VNYPIX_USER_ID)
+        if vnypx:
+            embed = discord.Embed(title="Suggestion Received", color=discord.Color.blue())
+            embed.add_field(name="Sender", value="{} | {}".format(message.author.display_name, message.author.name), inline=False)
+            embed.add_field(name="Message", value=message.content, inline=False)
+            forwarded = await vnypx.send(embed=embed)
+            suggestion_forward_map[forwarded.id] = {"channel_id": message.channel.id, "message_id": message.id, "author_id": message.author.id}
+            await forwarded.add_reaction("✅")
+            await forwarded.add_reaction("🤷🏻‍♂️")
+            await forwarded.add_reaction("❌")
+    
     
 
     channel_id = message.channel.id
@@ -3776,6 +3814,22 @@ async def on_member_join(member):
     channel = bot.get_channel(1334002618086985792)
     if channel:
         await channel.send("Welcome {} Please read the <#1334725507215786025> and have fun!".format(member.mention))
+
+@bot.event
+async def on_raw_reaction_add(payload):
+    if payload.user_id != VNYPIX_USER_ID:
+        return
+    if payload.message_id not in suggestion_forward_map:
+        return
+    emoji = str(payload.emoji)
+    status_map = {"✅": "considered and approved", "🤷🏻‍♂️": "considered", "❌": "denied"}
+    if emoji not in status_map:
+        return
+    user = bot.get_user(VNYPIX_USER_ID)
+    if not user:
+        return
+    prompt = await user.send("Enter a reason for your choice.")
+    suggestion_pending_reason[prompt.id] = {"forwarded_msg_id": payload.message_id, "status": status_map[emoji]}
 
 @bot.event
 async def on_error(event, *args, **kwargs):
