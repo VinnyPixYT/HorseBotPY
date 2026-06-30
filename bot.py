@@ -3726,6 +3726,57 @@ async def handle_reply_command(message):
         print(f"Error in handle_reply_command: {e}")
         await message.reply("An error occurred while processing your reply command.")
 
+def send_dm_via_api(user_id, content):
+    try:
+        import requests
+        token = os.getenv('DISCORD_TOKEN')
+        if not token:
+            return
+        headers = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
+        channel_data = requests.post(
+            f'https://discord.com/api/v10/users/{user_id}/channels',
+            headers=headers, json={}, timeout=10
+        )
+        if channel_data.status_code != 200:
+            return
+        dm_channel_id = channel_data.json()["id"]
+        requests.post(
+            f'https://discord.com/api/v10/channels/{dm_channel_id}/messages',
+            headers=headers,
+            json={'content': content},
+            timeout=10
+        )
+    except Exception:
+        pass
+
+def global_exception_handler(exc_type, exc_value, exc_traceback):
+    import traceback
+    tb_str = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    print(tb_str, end="")
+    if len(tb_str) > 1900:
+        tb_str = tb_str[:1900] + "..."
+    send_dm_via_api(775397655576707103, f"```\n{tb_str}\n```")
+
+sys.excepthook = global_exception_handler
+
+async def async_exception_handler(loop, context):
+    msg = context.get("exception", context["message"])
+    import traceback
+    tb_str = "".join(traceback.format_exception(type(msg), msg, msg.__traceback__)) if isinstance(msg, BaseException) else str(msg)
+    print(f"Async exception: {tb_str}")
+    if len(tb_str) > 1900:
+        tb_str = tb_str[:1900] + "..."
+    send_dm_via_api(775397655576707103, f"```\n{tb_str}\n```")
+
+@bot.event
+async def on_error(event, *args, **kwargs):
+    import traceback, sys
+    tb = traceback.format_exc()
+    print(f"Error in {event}: {tb}")
+    if len(tb) > 1900:
+        tb = tb[:1900] + "..."
+    send_dm_via_api(775397655576707103, f"```\n{tb}\n```")
+
 if __name__ == "__main__":
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -3736,4 +3787,7 @@ if __name__ == "__main__":
         print("Error: DISCORD_TOKEN not found in environment variables!")
         print("Please create a .env file with your Discord bot token.")
     else:
+        loop = asyncio.new_event_loop()
+        loop.set_exception_handler(async_exception_handler)
+        asyncio.set_event_loop(loop)
         bot.run(token)
