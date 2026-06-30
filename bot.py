@@ -3626,21 +3626,11 @@ async def dev_info(interaction: discord.Interaction):
             time_str = f"{minutes} minute{'s' if minutes != 1 else ''} ago"
     
 
-    json_files = []
-    if os.path.exists(DATA_FILE_CHANNELS):
-        json_files.append("counting_channels.json")
-    if os.path.exists(DATA_FILE_GAMES):
-        json_files.append("counting_games.json")
-    if os.path.exists(DATA_FILE_LEVELS):
-        json_files.append("user_levels.json")
-    
-
-    if len(json_files) == 6:
-        detects_msg = f"detected {', '.join(json_files)}"
-    elif len(json_files) > 0:
-        detects_msg = f"detected {', '.join(json_files)}"
-    else:
-        detects_msg = "detected no .json"
+    import glob
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    json_files = glob.glob(os.path.join(script_dir, "**/*.json"), recursive=True)
+    db_count = len(json_files)
+    detects_msg = "scanned, found {}/9 DB files".format(db_count)
     
 
     with open(__file__, 'r') as f:
