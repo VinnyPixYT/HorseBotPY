@@ -3772,6 +3772,12 @@ async def async_exception_handler(loop, context):
     send_dm_via_api(775397655576707103, f"```\n{tb_str}\n```")
 
 @bot.event
+async def on_member_join(member):
+    channel = bot.get_channel(1334002618086985792)
+    if channel:
+        await channel.send("Welcome {} Please read the <#1334725507215786025> and have fun!".format(member.mention))
+
+@bot.event
 async def on_error(event, *args, **kwargs):
     import traceback, sys
     tb = traceback.format_exc()
