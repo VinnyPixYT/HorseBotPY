@@ -35,6 +35,10 @@ A Discord bot with economy, counting games, levels, and tree planting features.
    python bot.py
    ```
 
+## IMPORTANT NOTICE
+
+> This bot is designed to function in only one server. You may only **locally** change the code to work in a designated server of your choice.
+
 ## License
 
 MIT
