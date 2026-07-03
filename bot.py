@@ -45,6 +45,7 @@ DATA_FILE_ECONOMY_SETTINGS = "economy_settings.json"
 DATA_FILE_ECONOMY_BALANCES = "economy_balances.json"
 DATA_FILE_REPORTS = "reports.json"
 DATA_FILE_GAME_SETTINGS = "game_settings.json"
+DATA_FILE_COUNTING_BLACKLIST = "counting_blacklist.json"
 DB_FILE = 'db/mainDB.sqlite'
 
 talked_recently = set()
@@ -58,6 +59,7 @@ suggestion_forward_map = {}
 suggestion_pending_reason = {}
 SUGGESTION_CHANNEL_ID = 1521535259471253595
 VNYPIX_USER_ID = 775397655576707103
+counting_blacklist = {}
 
 def validate_tree_name(name):
     
@@ -78,6 +80,7 @@ def save_data():
         save_economy_data()
         save_reports()
         save_game_settings()
+        save_counting_blacklist()
         print("Data saved successfully")
     except Exception as e:
         print("Error saving data: {}".format(e))
@@ -325,6 +328,7 @@ def load_data():
         
         load_reports()
         load_game_settings()
+        load_counting_blacklist()
             
         print("Final state - Channels: {}, Games: {}".format(counting_channels, counting_games))
     except Exception as e:
@@ -446,6 +450,26 @@ def get_game_settings():
             "chicken_fight_winrate": {"start": 50, "max": 70}
         }
     return game_settings
+
+def save_counting_blacklist():
+    global counting_blacklist
+    try:
+        import json
+        with open(DATA_FILE_COUNTING_BLACKLIST, 'w') as f:
+            json.dump(counting_blacklist, f, indent=2)
+    except Exception as e:
+        print("Error saving counting blacklist: {}".format(e))
+
+def load_counting_blacklist():
+    global counting_blacklist
+    try:
+        import json
+        if os.path.exists(DATA_FILE_COUNTING_BLACKLIST):
+            with open(DATA_FILE_COUNTING_BLACKLIST, 'r') as f:
+                counting_blacklist = json.load(f)
+    except Exception as e:
+        print("Error loading counting blacklist: {}".format(e))
+        counting_blacklist = {}
 
 def save_game_settings():
     global game_settings
@@ -3480,6 +3504,18 @@ async def on_message(message):
             return
         
         number = int(content)
+        
+        guild_id = str(message.guild.id)
+        if guild_id in counting_blacklist and str(message.author.id) in counting_blacklist[guild_id]:
+            await message.add_reaction("❌")
+            blacklist_embed = discord.Embed(
+                title="Blacklisted",
+                description="You are blacklisted from the counting game.",
+                color=discord.Color.red()
+            )
+            await message.reply(embed=blacklist_embed)
+            return
+        
         current_number = counting_games[channel_id]["current_number"]
         expected_number = current_number + 1
         
@@ -3561,6 +3597,62 @@ async def on_application_command_error(interaction: discord.Interaction, error):
             await interaction.response.send_message("An error occurred while running this command.", ephemeral=True)
         except discord.errors.NotFound:
             pass
+
+@bot.tree.command(name="admin-blacklist", description="Blacklist users from counting games (admin only)")
+@discord.app_commands.describe(
+    action="add, remove, or list",
+    user="User to blacklist/unblacklist"
+)
+@discord.app_commands.choices(
+    action=[
+        discord.app_commands.Choice(name="add", value="add"),
+        discord.app_commands.Choice(name="remove", value="remove"),
+        discord.app_commands.Choice(name="list", value="list")
+    ]
+)
+async def admin_blacklist(interaction: discord.Interaction, action: str, user: discord.Member = None):
+    required_roles = [1467889239512580261]
+    user_roles = [role.id for role in interaction.user.roles]
+    has_permission = any(role_id in user_roles for role_id in required_roles)
+    if not has_permission:
+        error_embed = discord.Embed(title="Access Denied", description="You don't have permission to use this command.", color=discord.Color.red())
+        await interaction.response.send_message(embed=error_embed, ephemeral=True)
+        return
+
+    guild_id = str(interaction.guild.id)
+    if guild_id not in counting_blacklist:
+        counting_blacklist[guild_id] = []
+
+    if action == "list":
+        blacklisted = counting_blacklist.get(guild_id, [])
+        if not blacklisted:
+            await interaction.response.send_message("No users are blacklisted from counting.", ephemeral=True)
+            return
+        mentions = ["<@{}>".format(uid) for uid in blacklisted]
+        embed = discord.Embed(title="Counting Blacklist", description="\n".join(mentions), color=discord.Color.orange())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    if not user:
+        await interaction.response.send_message("Please specify a user!", ephemeral=True)
+        return
+
+    uid = str(user.id)
+    if action == "add":
+        if uid in counting_blacklist[guild_id]:
+            await interaction.response.send_message("{} is already blacklisted from counting.".format(user.mention), ephemeral=True)
+        else:
+            counting_blacklist[guild_id].append(uid)
+            save_counting_blacklist()
+            await interaction.response.send_message("{} has been blacklisted from counting.".format(user.mention), ephemeral=True)
+
+    elif action == "remove":
+        if uid not in counting_blacklist[guild_id]:
+            await interaction.response.send_message("{} is not blacklisted.".format(user.mention), ephemeral=True)
+        else:
+            counting_blacklist[guild_id].remove(uid)
+            save_counting_blacklist()
+            await interaction.response.send_message("{} has been unblacklisted.".format(user.mention), ephemeral=True)
 
 @bot.tree.command(name="dev-info", description="Display development information (admin only)")
 async def dev_info(interaction: discord.Interaction):
