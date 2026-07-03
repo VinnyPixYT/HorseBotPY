@@ -45,7 +45,7 @@ DATA_FILE_ECONOMY_SETTINGS = "economy_settings.json"
 DATA_FILE_ECONOMY_BALANCES = "economy_balances.json"
 DATA_FILE_REPORTS = "reports.json"
 DATA_FILE_GAME_SETTINGS = "game_settings.json"
-DATA_FILE_COUNTING_BLACKLIST = "counting_blacklist.json"
+DATA_FILE_ADMIN_BLACKLIST = "admin_blacklist.json"
 DB_FILE = 'db/mainDB.sqlite'
 
 talked_recently = set()
@@ -59,7 +59,7 @@ suggestion_forward_map = {}
 suggestion_pending_reason = {}
 SUGGESTION_CHANNEL_ID = 1521535259471253595
 VNYPIX_USER_ID = 775397655576707103
-counting_blacklist = {}
+admin_blacklist_data = {}
 
 def validate_tree_name(name):
     
@@ -80,7 +80,7 @@ def save_data():
         save_economy_data()
         save_reports()
         save_game_settings()
-        save_counting_blacklist()
+        save_admin_blacklist()
         print("Data saved successfully")
     except Exception as e:
         print("Error saving data: {}".format(e))
@@ -328,7 +328,7 @@ def load_data():
         
         load_reports()
         load_game_settings()
-        load_counting_blacklist()
+        load_admin_blacklist()
             
         print("Final state - Channels: {}, Games: {}".format(counting_channels, counting_games))
     except Exception as e:
@@ -451,25 +451,37 @@ def get_game_settings():
         }
     return game_settings
 
-def save_counting_blacklist():
-    global counting_blacklist
+def save_admin_blacklist():
+    global admin_blacklist_data
     try:
         import json
-        with open(DATA_FILE_COUNTING_BLACKLIST, 'w') as f:
-            json.dump(counting_blacklist, f, indent=2)
+        with open(DATA_FILE_ADMIN_BLACKLIST, 'w') as f:
+            json.dump(admin_blacklist_data, f, indent=2)
     except Exception as e:
-        print("Error saving counting blacklist: {}".format(e))
+        print("Error saving admin blacklist: {}".format(e))
 
-def load_counting_blacklist():
-    global counting_blacklist
+def load_admin_blacklist():
+    global admin_blacklist_data
     try:
         import json
-        if os.path.exists(DATA_FILE_COUNTING_BLACKLIST):
-            with open(DATA_FILE_COUNTING_BLACKLIST, 'r') as f:
-                counting_blacklist = json.load(f)
+        if os.path.exists(DATA_FILE_ADMIN_BLACKLIST):
+            with open(DATA_FILE_ADMIN_BLACKLIST, 'r') as f:
+                admin_blacklist_data = json.load(f)
+            # migrate old format (timeout_minutes) to new format (timeout_seconds)
+            for gid, config in admin_blacklist_data.items():
+                if "timeout_minutes" in config and "timeout_seconds" not in config:
+                    mins = config.pop("timeout_minutes", 0)
+                    config["timeout_seconds"] = mins * 60
+                if "phrases" not in config:
+                    config["phrases"] = []
+                if "timeout_enabled" not in config:
+                    config["timeout_enabled"] = False
+                if "timeout_seconds" not in config:
+                    config["timeout_seconds"] = 0
+            save_admin_blacklist()
     except Exception as e:
-        print("Error loading counting blacklist: {}".format(e))
-        counting_blacklist = {}
+        print("Error loading admin blacklist: {}".format(e))
+        admin_blacklist_data = {}
 
 def save_game_settings():
     global game_settings
@@ -3416,6 +3428,27 @@ async def on_message(message):
     print(f"Sender: \"{message.author.name}\" | \"{message.author.display_name}\"")
     print(f"Channel: \"{message.channel.name}\"")
     
+    guild_id = str(message.guild.id)
+    if guild_id in admin_blacklist_data:
+        config = admin_blacklist_data[guild_id]
+        phrases = config.get("phrases", [])
+        content_lower = message.content.lower()
+        for phrase in phrases:
+            if phrase.lower() in content_lower:
+                try:
+                    await message.delete()
+                except:
+                    pass
+                timeout_secs = config.get("timeout_seconds", 0)
+                timeout_enabled = config.get("timeout_enabled", False)
+                print("Blacklist match: phrase='{}', timeout_enabled={}, timeout_secs={}".format(phrase, timeout_enabled, timeout_secs))
+                if timeout_enabled and timeout_secs > 0:
+                    try:
+                        await message.author.timeout(discord.utils.utcnow() + timedelta(seconds=timeout_secs), reason="Blacklisted phrase: {}".format(phrase))
+                    except:
+                        pass
+                return
+    
     if message.channel.id == SUGGESTION_CHANNEL_ID:
         vnypx = bot.get_user(VNYPIX_USER_ID)
         if vnypx:
@@ -3504,18 +3537,6 @@ async def on_message(message):
             return
         
         number = int(content)
-        
-        guild_id = str(message.guild.id)
-        if guild_id in counting_blacklist and str(message.author.id) in counting_blacklist[guild_id]:
-            await message.add_reaction("❌")
-            blacklist_embed = discord.Embed(
-                title="Blacklisted",
-                description="You are blacklisted from the counting game.",
-                color=discord.Color.red()
-            )
-            await message.reply(embed=blacklist_embed)
-            return
-        
         current_number = counting_games[channel_id]["current_number"]
         expected_number = current_number + 1
         
@@ -3598,19 +3619,30 @@ async def on_application_command_error(interaction: discord.Interaction, error):
         except discord.errors.NotFound:
             pass
 
-@bot.tree.command(name="admin-blacklist", description="Blacklist users from counting games (admin only)")
+@bot.tree.command(name="admin-blacklist", description="Manage blacklisted phrases (admin only)")
 @discord.app_commands.describe(
-    action="add, remove, or list",
-    user="User to blacklist/unblacklist"
+    action="add, remove, set-timeout, or list",
+    phrase="The phrase to blacklist/unblacklist",
+    duration="Timeout duration preset (for set-timeout)"
 )
 @discord.app_commands.choices(
     action=[
         discord.app_commands.Choice(name="add", value="add"),
         discord.app_commands.Choice(name="remove", value="remove"),
+        discord.app_commands.Choice(name="set-timeout", value="set-timeout"),
         discord.app_commands.Choice(name="list", value="list")
+    ],
+    duration=[
+        discord.app_commands.Choice(name="Disabled", value=0),
+        discord.app_commands.Choice(name="60 seconds", value=60),
+        discord.app_commands.Choice(name="5 minutes", value=300),
+        discord.app_commands.Choice(name="10 minutes", value=600),
+        discord.app_commands.Choice(name="1 hour", value=3600),
+        discord.app_commands.Choice(name="1 day", value=86400),
+        discord.app_commands.Choice(name="1 week", value=604800)
     ]
 )
-async def admin_blacklist(interaction: discord.Interaction, action: str, user: discord.Member = None):
+async def cmd_admin_blacklist(interaction: discord.Interaction, action: str, phrase: str = None, duration: int = None):
     required_roles = [1467889239512580261]
     user_roles = [role.id for role in interaction.user.roles]
     has_permission = any(role_id in user_roles for role_id in required_roles)
@@ -3620,39 +3652,72 @@ async def admin_blacklist(interaction: discord.Interaction, action: str, user: d
         return
 
     guild_id = str(interaction.guild.id)
-    if guild_id not in counting_blacklist:
-        counting_blacklist[guild_id] = []
+    if guild_id not in admin_blacklist_data:
+        admin_blacklist_data[guild_id] = {"phrases": [], "timeout_enabled": False, "timeout_seconds": 0}
 
     if action == "list":
-        blacklisted = counting_blacklist.get(guild_id, [])
-        if not blacklisted:
-            await interaction.response.send_message("No users are blacklisted from counting.", ephemeral=True)
+        config = admin_blacklist_data[guild_id]
+        phrases = config.get("phrases", [])
+        if not phrases and not config.get("timeout_enabled"):
+            await interaction.response.send_message("No blacklist configuration.", ephemeral=True)
             return
-        mentions = ["<@{}>".format(uid) for uid in blacklisted]
-        embed = discord.Embed(title="Counting Blacklist", description="\n".join(mentions), color=discord.Color.orange())
+        lines = []
+        if phrases:
+            lines.append("**Phrases:**")
+            lines += ["- `{}`".format(p) for p in phrases]
+        if config.get("timeout_enabled"):
+            secs = config["timeout_seconds"]
+            label = {60: "60 seconds", 300: "5 minutes", 600: "10 minutes", 3600: "1 hour", 86400: "1 day", 604800: "1 week"}.get(secs, "{} seconds".format(secs))
+            lines.append("")
+            lines.append("**Timeout:** enabled ({})".format(label))
+        else:
+            lines.append("")
+            lines.append("**Timeout:** disabled")
+        embed = discord.Embed(title="Admin Blacklist", description="\n".join(lines), color=discord.Color.orange())
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
 
-    if not user:
-        await interaction.response.send_message("Please specify a user!", ephemeral=True)
+    if action == "set-timeout":
+        if duration is None:
+            await interaction.response.send_message("Please select a duration preset.", ephemeral=True)
+            return
+        if duration == 0:
+            admin_blacklist_data[guild_id]["timeout_enabled"] = False
+            admin_blacklist_data[guild_id]["timeout_seconds"] = 0
+            await interaction.response.send_message("Timeout disabled.", ephemeral=True)
+        else:
+            admin_blacklist_data[guild_id]["timeout_enabled"] = True
+            admin_blacklist_data[guild_id]["timeout_seconds"] = duration
+            label = {60: "60 seconds", 300: "5 minutes", 600: "10 minutes", 3600: "1 hour", 86400: "1 day", 604800: "1 week"}.get(duration, "{} seconds".format(duration))
+            await interaction.response.send_message("Timeout set to {}.".format(label), ephemeral=True)
+        save_admin_blacklist()
         return
 
-    uid = str(user.id)
+    if not phrase:
+        await interaction.response.send_message("Please specify a phrase!", ephemeral=True)
+        return
+
     if action == "add":
-        if uid in counting_blacklist[guild_id]:
-            await interaction.response.send_message("{} is already blacklisted from counting.".format(user.mention), ephemeral=True)
+        if phrase.lower() in [p.lower() for p in admin_blacklist_data[guild_id]["phrases"]]:
+            await interaction.response.send_message("`{}` is already blacklisted.".format(phrase), ephemeral=True)
         else:
-            counting_blacklist[guild_id].append(uid)
-            save_counting_blacklist()
-            await interaction.response.send_message("{} has been blacklisted from counting.".format(user.mention), ephemeral=True)
+            admin_blacklist_data[guild_id]["phrases"].append(phrase)
+            save_admin_blacklist()
+            await interaction.response.send_message("`{}` added to blacklist.".format(phrase), ephemeral=True)
 
     elif action == "remove":
-        if uid not in counting_blacklist[guild_id]:
-            await interaction.response.send_message("{} is not blacklisted.".format(user.mention), ephemeral=True)
+        phrases = admin_blacklist_data[guild_id]["phrases"]
+        found = None
+        for p in phrases:
+            if p.lower() == phrase.lower():
+                found = p
+                break
+        if found:
+            phrases.remove(found)
+            save_admin_blacklist()
+            await interaction.response.send_message("`{}` removed from blacklist.".format(found), ephemeral=True)
         else:
-            counting_blacklist[guild_id].remove(uid)
-            save_counting_blacklist()
-            await interaction.response.send_message("{} has been unblacklisted.".format(user.mention), ephemeral=True)
+            await interaction.response.send_message("`{}` is not blacklisted.".format(phrase), ephemeral=True)
 
 @bot.tree.command(name="dev-info", description="Display development information (admin only)")
 async def dev_info(interaction: discord.Interaction):
@@ -3854,6 +3919,7 @@ def send_dm_via_api(user_id, content):
         import requests
         token = os.getenv('DISCORD_TOKEN')
         if not token:
+            print("send_dm_via_api: No token found")
             return
         headers = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
         channel_data = requests.post(
@@ -3861,16 +3927,19 @@ def send_dm_via_api(user_id, content):
             headers=headers, json={}, timeout=10
         )
         if channel_data.status_code != 200:
+            print(f"send_dm_via_api: Failed to create DM channel: {channel_data.status_code} {channel_data.text}")
             return
         dm_channel_id = channel_data.json()["id"]
-        requests.post(
+        resp = requests.post(
             f'https://discord.com/api/v10/channels/{dm_channel_id}/messages',
             headers=headers,
             json={'content': content},
             timeout=10
         )
-    except Exception:
-        pass
+        if resp.status_code != 200:
+            print(f"send_dm_via_api: Failed to send message: {resp.status_code} {resp.text}")
+    except Exception as e:
+        print(f"send_dm_via_api: Exception: {e}")
 
 def global_exception_handler(exc_type, exc_value, exc_traceback):
     import traceback
@@ -3889,7 +3958,14 @@ async def async_exception_handler(loop, context):
     print(f"Async exception: {tb_str}")
     if len(tb_str) > 1900:
         tb_str = tb_str[:1900] + "..."
-    send_dm_via_api(775397655576707103, f"```\n{tb_str}\n```")
+    user = bot.get_user(775397655576707103)
+    if user:
+        try:
+            await user.send(f"```\n{tb_str}\n```")
+        except Exception as e:
+            print(f"Failed to DM user: {e}")
+    else:
+        send_dm_via_api(775397655576707103, f"```\n{tb_str}\n```")
 
 @bot.event
 async def on_member_join(member):
@@ -3920,7 +3996,15 @@ async def on_error(event, *args, **kwargs):
     print(f"Error in {event}: {tb}")
     if len(tb) > 1900:
         tb = tb[:1900] + "..."
-    send_dm_via_api(775397655576707103, f"```\n{tb}\n```")
+    user = bot.get_user(775397655576707103)
+    if user:
+        try:
+            await user.send(f"```\n{tb}\n```")
+        except Exception as e:
+            print(f"Failed to DM user: {e}")
+            send_dm_via_api(775397655576707103, f"```\n{tb}\n```")
+    else:
+        send_dm_via_api(775397655576707103, f"```\n{tb}\n```")
 
 if __name__ == "__main__":
 
