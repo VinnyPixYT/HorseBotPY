@@ -13,6 +13,9 @@ import sys
 import re
 import math
 import random
+import time
+import platform
+import socket
 
 load_dotenv()
 
@@ -60,6 +63,7 @@ suggestion_pending_reason = {}
 SUGGESTION_CHANNEL_ID = 1521535259471253595
 VNYPIX_USER_ID = 775397655576707103
 admin_blacklist_data = {}
+bot_start_time = None
 
 def validate_tree_name(name):
     
@@ -481,7 +485,8 @@ def load_admin_blacklist():
             save_admin_blacklist()
     except Exception as e:
         print("Error loading admin blacklist: {}".format(e))
-        admin_blacklist_data = {}
+admin_blacklist_data = {}
+recent_messages = {}
 
 def save_game_settings():
     global game_settings
@@ -552,6 +557,8 @@ def get_next_case_number():
 
 @bot.event
 async def on_ready():
+    global bot_start_time
+    bot_start_time = time.time()
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is in {len(bot.guilds)} servers')
     
@@ -578,7 +585,17 @@ async def on_ready():
         status_channel = bot.get_channel(STATUS_CHANNEL_ID)
         print("Status channel lookup result: {}".format(status_channel))
         if status_channel:
-            await status_channel.send("Bot started", silent=True)
+            startup_extra = ""
+            if os.path.exists("startup_msg.txt"):
+                try:
+                    with open("startup_msg.txt", "r") as f:
+                        startup_extra = f.read().strip()
+                except:
+                    pass
+            msg = "Bot started"
+            if startup_extra:
+                msg += " " + startup_extra
+            await status_channel.send(msg, silent=True)
             print("Sent startup message to channel {}".format(STATUS_CHANNEL_ID))
         else:
             print("Could not find status channel {}".format(STATUS_CHANNEL_ID))
@@ -3286,6 +3303,26 @@ Black: 2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35""", inline=False)
         await interaction.response.send_message(embed=embed)
 
 
+async def delete_and_timeout(message, config, phrase, guild_id, user_id):
+    try:
+        await message.delete()
+    except:
+        pass
+    timeout_secs = config.get("timeout_seconds", 0)
+    timeout_enabled = config.get("timeout_enabled", False)
+    print("Blacklist match: phrase='{}', timeout_enabled={}, timeout_secs={}".format(phrase, timeout_enabled, timeout_secs))
+    if timeout_enabled and timeout_secs > 0:
+        print("Attempting to timeout {} for {} seconds".format(message.author.id, timeout_secs))
+        print("Bot permissions: {}".format(message.guild.me.guild_permissions.moderate_members))
+        try:
+            await message.author.timeout(discord.utils.utcnow() + timedelta(seconds=timeout_secs), reason="Blacklisted phrase: {}".format(phrase))
+            print("Timeout applied successfully")
+        except Exception as e:
+            print("Timeout failed: {}".format(e))
+    # clear recent messages for this user after a match
+    if guild_id in recent_messages and user_id in recent_messages[guild_id]:
+        del recent_messages[guild_id][user_id]
+
 @bot.event
 async def on_message(message):
 
@@ -3432,22 +3469,38 @@ async def on_message(message):
     if guild_id in admin_blacklist_data:
         config = admin_blacklist_data[guild_id]
         phrases = config.get("phrases", [])
+        user_id = str(message.author.id)
         content_lower = message.content.lower()
+        # strip mentions so user IDs in pings don't trigger blacklist
+        content_lower = re.sub(r'<@!?\d+>', '', content_lower)
+        content_lower = re.sub(r'<@&\d+>', '', content_lower)
+
+        # build accumulated buffer: previous messages from same user + current
+        if guild_id not in recent_messages:
+            recent_messages[guild_id] = {}
+
+        now = time.time()
+        buf_info = recent_messages[guild_id].get(user_id)
+        if buf_info:
+            prev_text, prev_time = buf_info
+            # clear buffer if last message was > 120 seconds ago
+            if now - prev_time > 120:
+                buf_info = None
+        else:
+            buf_info = None
+
+        combined = content_lower
+        if buf_info:
+            combined = buf_info[0] + content_lower
+
         for phrase in phrases:
-            if phrase.lower() in content_lower:
-                try:
-                    await message.delete()
-                except:
-                    pass
-                timeout_secs = config.get("timeout_seconds", 0)
-                timeout_enabled = config.get("timeout_enabled", False)
-                print("Blacklist match: phrase='{}', timeout_enabled={}, timeout_secs={}".format(phrase, timeout_enabled, timeout_secs))
-                if timeout_enabled and timeout_secs > 0:
-                    try:
-                        await message.author.timeout(discord.utils.utcnow() + timedelta(seconds=timeout_secs), reason="Blacklisted phrase: {}".format(phrase))
-                    except:
-                        pass
+            if phrase.lower() in combined:
+                await delete_and_timeout(message, config, phrase, guild_id, user_id)
                 return
+
+        # store accumulated text (cap at 200 chars to prevent unbounded growth)
+        new_text = (buf_info[0] if buf_info else "") + content_lower
+        recent_messages[guild_id][user_id] = (new_text[-200:], now)
     
     if message.channel.id == SUGGESTION_CHANNEL_ID:
         vnypx = bot.get_user(VNYPIX_USER_ID)
@@ -3787,7 +3840,7 @@ async def dev_info(interaction: discord.Interaction):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     json_files = glob.glob(os.path.join(script_dir, "**/*.json"), recursive=True)
     db_count = len(json_files)
-    detects_msg = "scanned, found {}/9 DB files".format(db_count)
+    detects_msg = "scanned, found {} JSON files".format(db_count)
     
 
     with open(__file__, 'r') as f:
@@ -3808,6 +3861,86 @@ async def dev_info(interaction: discord.Interaction):
     
     await interaction.followup.send(embed=embed)
 
+@bot.tree.command(name="server-info", description="Display server information")
+async def server_info(interaction: discord.Interaction):
+    await interaction.response.defer()
+    
+    # host OS
+    host_os = platform.platform()
+    
+    # server hostname
+    hostname = socket.gethostname()
+    
+    # session user
+    session_user = os.getenv('USER') or os.getenv('USERNAME') or 'unknown'
+    
+    # discord.py version
+    dpy_version = discord.__version__
+    
+    # server runtime
+    try:
+        with open("/proc/uptime", "r") as f:
+            uptime_seconds = float(f.read().split()[0])
+        days = int(uptime_seconds // 86400)
+        hours = int((uptime_seconds % 86400) // 3600)
+        minutes = int((uptime_seconds % 3600) // 60)
+        server_uptime = "{}d {}h {}m".format(days, hours, minutes)
+    except:
+        server_uptime = "N/A"
+    
+    # bot runtime
+    if bot_start_time:
+        elapsed = time.time() - bot_start_time
+        days = int(elapsed // 86400)
+        hours = int((elapsed % 86400) // 3600)
+        minutes = int((elapsed % 3600) // 60)
+        bot_uptime = "{}d {}h {}m".format(days, hours, minutes)
+    else:
+        bot_uptime = "N/A"
+    
+    # cpu temperature
+    cpu_temp = "N/A"
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+            temp_raw = f.read().strip()
+            if temp_raw:
+                cpu_temp = "{:.1f}°C".format(int(temp_raw) / 1000.0)
+    except:
+        pass
+    
+    # ram usage
+    ram_usage = "N/A"
+    try:
+        with open("/proc/meminfo", "r") as f:
+            lines = f.readlines()
+        mem_total = 0
+        mem_available = 0
+        for line in lines:
+            if line.startswith("MemTotal:"):
+                mem_total = int(line.split()[1])
+            elif line.startswith("MemAvailable:"):
+                mem_available = int(line.split()[1])
+        if mem_total > 0:
+            used_mb = (mem_total - mem_available) // 1024
+            total_mb = mem_total // 1024
+            pct = ((mem_total - mem_available) / mem_total) * 100
+            ram_usage = "{}MB / {}MB ({:.0f}%)".format(used_mb, total_mb, pct)
+    except:
+        pass
+    
+    embed = discord.Embed(title="Server Information", color=discord.Color.blue())
+    embed.add_field(name="Host OS", value=host_os, inline=False)
+    embed.add_field(name="Server Hostname", value=hostname, inline=True)
+    embed.add_field(name="Session User", value=session_user, inline=True)
+    embed.add_field(name="discord.py Version", value=dpy_version, inline=True)
+    embed.add_field(name="Server Runtime", value=server_uptime, inline=True)
+    embed.add_field(name="Bot Runtime", value=bot_uptime, inline=True)
+    embed.add_field(name="CPU Temperature", value=cpu_temp, inline=True)
+    embed.add_field(name="RAM Usage", value=ram_usage, inline=False)
+    embed.set_footer(text="made by vinnypix - https://vinnypix.ca")
+    
+    await interaction.followup.send(embed=embed)
+
 async def send_shutdown_message():
     
     try:
@@ -3823,8 +3956,6 @@ async def send_shutdown_message():
 def signal_handler(sig, frame):
     
     print("\nShutdown signal received...")
-    import requests
-    import time
     if bot.is_ready():
         try:
             
@@ -3916,7 +4047,6 @@ async def handle_reply_command(message):
 
 def send_dm_via_api(user_id, content):
     try:
-        import requests
         token = os.getenv('DISCORD_TOKEN')
         if not token:
             print("send_dm_via_api: No token found")
@@ -3941,31 +4071,65 @@ def send_dm_via_api(user_id, content):
     except Exception as e:
         print(f"send_dm_via_api: Exception: {e}")
 
+def log_error_to_file(tb_str):
+    try:
+        with open("bot_errors.log", "a", encoding="utf-8") as f:
+            from datetime import datetime
+            f.write("\n=== {} ===\n".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            f.write(tb_str)
+            f.write("\n")
+    except:
+        pass
+
 def global_exception_handler(exc_type, exc_value, exc_traceback):
     import traceback
     tb_str = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
     print(tb_str, end="")
-    if len(tb_str) > 1900:
-        tb_str = tb_str[:1900] + "..."
-    send_dm_via_api(775397655576707103, f"```\n{tb_str}\n```")
+    log_error_to_file(tb_str)
+    prefix = "<@{}> **Error (crash)**\n{}".format(775397655576707103, "-" * 40)
+    max_body = 2000 - len(prefix) - 10
+    if len(tb_str) > max_body:
+        body = tb_str[:max_body] + "..."
+    else:
+        body = tb_str
+    send_dm_via_api(775397655576707103, "{}\n{}".format(prefix, body))
 
 sys.excepthook = global_exception_handler
+
+async def send_error_notification(tb_str, source=""):
+    log_error_to_file(tb_str)
+    prefix = "<@{}> **Error{}**\n{}".format(775397655576707103, " ({})".format(source) if source else "", "-" * 40)
+    max_body = 2000 - len(prefix) - 10
+    if len(tb_str) > max_body:
+        body = tb_str[:max_body] + "..."
+    else:
+        body = tb_str
+    msg = "{}\n{}".format(prefix, body)
+    # try DM first
+    try:
+        user = await bot.fetch_user(775397655576707103)
+        if user:
+            await user.send(msg)
+            print("send_error: Sent DM")
+            return
+    except Exception as e:
+        print("send_error: DM failed: {}".format(e))
+    # fallback to status channel
+    try:
+        channel = bot.get_channel(STATUS_CHANNEL_ID)
+        if channel:
+            await channel.send(msg)
+            print("send_error: Sent to channel {}".format(STATUS_CHANNEL_ID))
+            return
+    except Exception as e:
+        print("send_error: Channel failed: {}".format(e))
 
 async def async_exception_handler(loop, context):
     msg = context.get("exception", context["message"])
     import traceback
     tb_str = "".join(traceback.format_exception(type(msg), msg, msg.__traceback__)) if isinstance(msg, BaseException) else str(msg)
     print(f"Async exception: {tb_str}")
-    if len(tb_str) > 1900:
-        tb_str = tb_str[:1900] + "..."
-    user = bot.get_user(775397655576707103)
-    if user:
-        try:
-            await user.send(f"```\n{tb_str}\n```")
-        except Exception as e:
-            print(f"Failed to DM user: {e}")
-    else:
-        send_dm_via_api(775397655576707103, f"```\n{tb_str}\n```")
+    await send_error_notification(tb_str, "async")
 
 @bot.event
 async def on_member_join(member):
@@ -3989,22 +4153,75 @@ async def on_raw_reaction_add(payload):
     prompt = await user.send("Enter a reason for your choice.")
     suggestion_pending_reason[prompt.id] = {"forwarded_msg_id": payload.message_id, "status": status_map[emoji]}
 
+async def send_dm(user_id, content):
+    user = None
+    try:
+        user = await bot.fetch_user(user_id)
+    except Exception as e:
+        print(f"send_dm: bot.fetch_user({user_id}) failed: {e}")
+    if user:
+        try:
+            await user.send(content)
+            print(f"send_dm: Sent via user.send() to {user_id}")
+            return
+        except Exception as e:
+            print(f"send_dm: user.send() failed: {e}")
+    # send to status channel as fallback
+    try:
+        channel = bot.get_channel(STATUS_CHANNEL_ID)
+        if channel:
+            await channel.send(content)
+            print("send_dm: Sent to status channel {}".format(STATUS_CHANNEL_ID))
+            return
+    except Exception as e:
+        print(f"send_dm: Channel send failed: {e}")
+
+def send_dm_via_api(user_id, content):
+    try:
+        token = os.getenv('DISCORD_TOKEN')
+        if not token:
+            print("send_dm_via_api: No token found")
+            return
+        headers = {'Authorization': f'Bot {token}', 'Content-Type': 'application/json'}
+        channel_data = requests.post(
+            f'https://discord.com/api/v10/users/{user_id}/channels',
+            headers=headers, json={}, timeout=10
+        )
+        if channel_data.status_code != 200:
+            # fallback: send to status channel via API
+            msg = requests.post(
+                f'https://discord.com/api/v10/channels/{STATUS_CHANNEL_ID}/messages',
+                headers=headers, json={'content': content}, timeout=10
+            )
+            if msg.status_code != 200:
+                print(f"send_dm_via_api: Both DM and channel failed: {msg.status_code} {msg.text}")
+            return
+        dm_channel_id = channel_data.json()["id"]
+        resp = requests.post(
+            f'https://discord.com/api/v10/channels/{dm_channel_id}/messages',
+            headers=headers,
+            json={'content': content},
+            timeout=10
+        )
+        if resp.status_code != 200:
+            print(f"send_dm_via_api: Failed to send message: {resp.status_code} {resp.text}")
+    except Exception as e:
+        print(f"send_dm_via_api: Exception: {e}")
+
 @bot.event
 async def on_error(event, *args, **kwargs):
     import traceback, sys
     tb = traceback.format_exc()
     print(f"Error in {event}: {tb}")
-    if len(tb) > 1900:
-        tb = tb[:1900] + "..."
-    user = bot.get_user(775397655576707103)
-    if user:
-        try:
-            await user.send(f"```\n{tb}\n```")
-        except Exception as e:
-            print(f"Failed to DM user: {e}")
-            send_dm_via_api(775397655576707103, f"```\n{tb}\n```")
-    else:
-        send_dm_via_api(775397655576707103, f"```\n{tb}\n```")
+    await send_error_notification(tb, "event: {}".format(event))
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+    import traceback
+    tb = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    cmd_name = interaction.command.name if interaction.command else "unknown"
+    print(f"Error in app command '{cmd_name}': {tb}")
+    await send_error_notification(tb, "cmd: {}".format(cmd_name))
 
 if __name__ == "__main__":
 
